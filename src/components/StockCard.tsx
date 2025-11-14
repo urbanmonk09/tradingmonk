@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { StockDisplay } from "../../app/page";
+import { StockDisplay } from "../utils/xaiLogic"; // ✅ correct type import
 
 interface StockCardProps extends Omit<StockDisplay, "signal" | "explanation"> {
   signal: "BUY" | "SELL" | "HOLD" | "LONG" | "SHORT";

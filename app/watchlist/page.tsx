@@ -1,108 +1,201 @@
 "use client";
 
-import React, { useContext } from "react";
+import React, { useEffect, useState, useContext } from "react";
 import StockCard from "../../src/components/StockCard";
 import { AuthContext } from "../../src/context/AuthContext";
 import { useQuery } from "convex/react";
-import { api } from "../../convex/_generated/api"; // ✅ use auto-generated api
+import { api } from "../../convex/_generated/api";
+import { fetchStockData } from "../../src/api/fetchStockData";
 
-// Type for each trade in the watchlist
-export type WatchlistItem = {
-  _id: string;
-  symbol: string;
-  type: "stock" | "index" | "crypto";
-  direction: "long" | "short";
-  entryPrice: number;
-  stopLoss?: number;
-  targets?: number[];
-  confidence: number;
-  note?: string;
-  status: "active" | "target_hit" | "stopped_out";
-  signal: "BUY" | "SELL" | "HOLD";
-  hitStatus: "ACTIVE" | "TARGET ✅" | "STOP ❌";
-};
+// ------------------------------
+// Literal type for StockCard
+type SymbolType = "stock" | "index" | "crypto";
+
+// Default symbols to always show
+const defaultSymbols: { symbol: string; type: SymbolType }[] = [
+  { symbol: "RELIANCE.NS", type: "stock" },
+  { symbol: "^NSEI", type: "index" },
+  { symbol: "BTC/USD", type: "crypto" },
+  { symbol: "ETH/USD", type: "crypto" },
+  { symbol: "XAU/USD", type: "index" },
+];
+
+const REFRESH_INTERVAL = 180000; // 3 minutes
 
 export default function Watchlist() {
   const { user } = useContext(AuthContext);
+  const userEmail = (user as any)?.email ?? "";
 
-  // Redirect if not logged in
-  if (!user) return null;
+  const savedTrades = useQuery(api.trades.getUserTrades, { userEmail }) ?? [];
 
-  // Get email from user — cast to any if TS type doesn't include it
-  const userEmail = (user as any).email ?? "";
+  // Live prices with previousClose
+  const [livePrices, setLivePrices] = useState<
+    Record<string, { price: number; previousClose: number; lastUpdated: number }>
+  >({});
 
-  // ✅ Correct useQuery call
-  const trades = useQuery(api.trades.getUserTrades, { userEmail }) ?? [];
+  // ------------------------------
+  // Fetch live prices
+  useEffect(() => {
+    let isMounted = true;
 
-  // Map backend trade status to UI hitStatus
-  const mapStatusToHitStatus = (status: "active" | "target_hit" | "stopped_out"): WatchlistItem["hitStatus"] => {
-    switch (status) {
-      case "active":
-        return "ACTIVE";
-      case "target_hit":
-        return "TARGET ✅";
-      case "stopped_out":
-        return "STOP ❌";
-      default:
-        return "ACTIVE";
+    async function fetchAllPrices() {
+      const now = Date.now();
+      for (const s of defaultSymbols) {
+        const last = livePrices[s.symbol]?.lastUpdated ?? 0;
+        if (now - last >= REFRESH_INTERVAL) {
+          try {
+            const provider =
+              s.symbol.includes("/USD") && s.symbol !== "XAU/USD"
+                ? "binance"
+                : s.symbol === "XAU/USD"
+                ? "finnhub"
+                : "yahoo";
+            const data = await fetchStockData(
+              s.symbol === "BTC/USD" ? "BTCUSDT" : s.symbol === "ETH/USD" ? "ETHUSDT" : s.symbol === "XAU/USD" ? "XAUUSD" : s.symbol,
+              provider as any
+            );
+            if (!isMounted) return;
+            setLivePrices((prev) => ({
+              ...prev,
+              [s.symbol]: {
+                price: data.current ?? 0,
+                previousClose: data.previousClose ?? data.current ?? 0,
+                lastUpdated: now,
+              },
+            }));
+          } catch (err) {
+            console.warn("Failed to fetch price", s.symbol, err);
+          }
+        }
+      }
     }
-  };
 
-  // Normalize trades for WatchlistItem
-  const normalizedTrades: WatchlistItem[] = trades.map((t: any) => ({
-    _id: t._id,
-    symbol: t.symbol,
-    type: t.type,
-    direction: t.direction,
-    entryPrice: t.entryPrice,
-    stopLoss: t.stopLoss,
-    targets: t.targets,
-    confidence: t.confidence,
-    note: t.note,
-    status: t.status,
-    signal: t.direction === "long" ? "BUY" : t.direction === "short" ? "SELL" : "HOLD",
-    hitStatus: mapStatusToHitStatus(t.status),
-  }));
+    fetchAllPrices();
+    const interval = setInterval(fetchAllPrices, 10000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [livePrices]);
 
-  // Sort by confidence descending
-  const sortedTrades = [...normalizedTrades].sort((a, b) => b.confidence - a.confidence);
+  // ------------------------------
+  // Merge saved trades with live prices
+  const tradesWithPrices = savedTrades.map((t: any) => {
+    const live = livePrices[t.symbol] ?? { price: 0, previousClose: 0 };
+    const prevClose = live.previousClose ?? t.entryPrice ?? 0;
 
-  // Skip top-1 per type (already shown on Home)
-  const seen: Record<string, boolean> = {};
-  const filteredTrades = sortedTrades.filter((t) => {
-    if (!seen[t.type]) {
-      seen[t.type] = true;
-      return false; // skip first record of each type
-    }
-    return true;
+    const stoploss = prevClose * 0.985;
+    const targets = [prevClose * 1.01, prevClose * 1.02, prevClose * 1.03];
+    const support = prevClose * 0.995;
+    const resistance = prevClose * 1.01;
+
+    // Hit status based on live price
+    let hitStatus: "ACTIVE" | "TARGET ✅" | "STOP ❌" = "ACTIVE";
+    if (live.price <= stoploss) hitStatus = "STOP ❌";
+    else if (live.price >= Math.max(...targets)) hitStatus = "TARGET ✅";
+
+    return {
+      ...t,
+      price: live.price ?? t.entryPrice,
+      stoploss,
+      targets,
+      support,
+      resistance,
+      hitStatus,
+      signal: t.direction === "long" ? "BUY" : t.direction === "short" ? "SELL" : "HOLD",
+    };
   });
 
+  const symbolsWithoutTrades = defaultSymbols.filter(
+    (s) => !savedTrades.some((t: any) => t.symbol === s.symbol)
+  );
+
+  const sortedTrades = [...tradesWithPrices].sort((a, b) => b.confidence - a.confidence);
+
+  const topTrades: typeof sortedTrades = [];
+  const seenTypes: Record<string, boolean> = {};
+  const remainingTrades: typeof sortedTrades = [];
+
+  for (const t of sortedTrades) {
+    if (!seenTypes[t.type]) {
+      topTrades.push(t);
+      seenTypes[t.type] = true;
+    } else {
+      remainingTrades.push(t);
+    }
+  }
+
+  // ------------------------------
+  // Render
   return (
     <div className="p-6 bg-gray-100 min-h-screen">
-      <h2 className="text-xl font-semibold mb-2">💼 Pro Members Watchlist</h2>
-      <p className="text-gray-600 mb-4">All other high-quality trades ranked by confidence</p>
-
-      {filteredTrades.length === 0 ? (
-        <p>No trades yet.</p>
+      {!user ? (
+        <p className="text-gray-500">Please log in to see your watchlist.</p>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredTrades.map((t) => (
-            <StockCard
-              key={t._id}
-              symbol={t.symbol}
-              type={t.type}
-              signal={t.signal}
-              confidence={t.confidence}
-              explanation={t.note ?? ""}
-              price={t.entryPrice}
-              stoploss={t.stopLoss}
-              targets={t.targets}
-              support={undefined}
-              resistance={undefined}
-              hitStatus={t.hitStatus}
-            />
-          ))}
-        </div>
+        <>
+          {/* Top trades */}
+          {topTrades.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-lg font-semibold mb-2">🔥 Top Trades</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {topTrades.map((t) => (
+                  <StockCard key={t._id} {...t} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Remaining trades */}
+          {remainingTrades.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-lg font-semibold mb-2">All Other Trades</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {remainingTrades.map((t) => (
+                  <StockCard key={t._id} {...t} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Symbols without trades */}
+          {symbolsWithoutTrades.length > 0 && (
+            <div className="mt-6">
+              <h3 className="text-lg font-semibold mb-2">Live Prices</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {symbolsWithoutTrades.map((s) => {
+                  const live = livePrices[s.symbol] ?? { price: 0, previousClose: 0 };
+                  const prevClose = live.previousClose ?? live.price ?? 0;
+
+                  const stoploss = prevClose * 0.985;
+                  const targets = [prevClose * 1.01, prevClose * 1.02, prevClose * 1.03];
+                  const support = prevClose * 0.995;
+                  const resistance = prevClose * 1.01;
+
+                  // Hit status based on live price
+                  let hitStatus: "ACTIVE" | "TARGET ✅" | "STOP ❌" = "ACTIVE";
+                  if (live.price <= stoploss) hitStatus = "STOP ❌";
+                  else if (live.price >= Math.max(...targets)) hitStatus = "TARGET ✅";
+
+                  return (
+                    <StockCard
+                      key={s.symbol}
+                      symbol={s.symbol}
+                      type={s.type}
+                      signal="HOLD"
+                      confidence={0}
+                      price={live.price ?? prevClose}
+                      stoploss={stoploss}
+                      targets={targets}
+                      support={support}
+                      resistance={resistance}
+                      hitStatus={hitStatus}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

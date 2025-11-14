@@ -308,3 +308,18 @@ export function updateHitStatus(
 
   return { hitStatus, resolved, finalPrice, explanation };
 }
+// src/utils/xaiLogic.ts
+
+export type StockDisplay = {
+  symbol: string;
+  signal: "BUY" | "SELL" | "HOLD";
+  confidence: number;
+  explanation: string;
+  price?: number;
+  type: "stock" | "index" | "crypto" | "commodity";
+  support?: number;
+  resistance?: number;
+  stoploss?: number;
+  targets?: number[];
+  hitStatus?: "ACTIVE" | "TARGET ✅" | "STOP ❌";
+};

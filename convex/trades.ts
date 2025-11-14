@@ -27,7 +27,6 @@ export const saveTrade = mutation({
 });
 
 // Get all user trades for today
-
 export const getUserTrades = query({
   args: { userEmail: v.string() },
   handler: async (ctx, { userEmail }) => {
@@ -37,7 +36,6 @@ export const getUserTrades = query({
       .collect();
   },
 });
-
 
 // Update trade status (target hit / stoploss hit)
 export const updateTradeStatus = mutation({
@@ -55,7 +53,6 @@ export const updateTradeStatus = mutation({
   },
 });
 
-
 export const getDailyTrades = query({
   args: { email: v.string(), since: v.number() },
   handler: async (ctx, { email, since }) => {
@@ -70,4 +67,3 @@ export const getDailyTrades = query({
       .collect();
   },
 });
-

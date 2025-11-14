@@ -15,6 +15,7 @@ export interface StockData {
   source?: "finnhub" | "yahoo" | "unknown";
 }
 
+// Fallback-aware fetch
 export async function fetchStockData(
   symbol: string,
   provider: "finnhub" | "yahoo" = "finnhub"
@@ -22,12 +23,21 @@ export async function fetchStockData(
   try {
     const url = `/api/stock?symbol=${encodeURIComponent(symbol)}&provider=${provider}`;
     const res = await axios.get(url);
-    return res.data as StockData;
+    const data = res.data as StockData;
+
+    // Fallback logic for closed markets or missing data
+    const currentPrice = data.current ?? data.previousClose ?? 0;
+
+    return {
+      ...data,
+      current: currentPrice,
+      lastUpdated: Date.now(),
+    };
   } catch (err) {
     console.warn("fetchStockData failed", symbol, err);
     return {
       symbol,
-      current: null,
+      current: 0,
       high: null,
       low: null,
       open: null,

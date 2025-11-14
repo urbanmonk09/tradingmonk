@@ -26,5 +26,5 @@ export default defineSchema({
     timestamp: v.number(),
     note: v.optional(v.string()),
   })
-  .index("by_userEmail", ["userEmail"])
+    .index("by_userEmail", ["userEmail"]),
 });
