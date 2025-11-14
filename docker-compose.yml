@@ -1,0 +1,18 @@
+version: "3.8"
+services:
+  web:
+    build: .
+    command: npm run dev
+    volumes:
+      - ./:/app
+    ports:
+      - "3000:3000"
+    environment:
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
+      - REDIS_URL=redis://redis:6379
+      - CACHE_TTL_SECONDS=10
+      - RATE_LIMIT_PER_MIN=120
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
