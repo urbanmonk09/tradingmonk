@@ -13,7 +13,7 @@ import {
   SignedOut,
   UserButton,
 } from '@clerk/nextjs'
-import { ConvexClientProvider } from "./ConvexClientProvider";
+import { ConvexClientProvider } from "../app/ConvexClientProvider";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
