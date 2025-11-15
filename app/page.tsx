@@ -51,16 +51,17 @@ export default function Home() {
   }, []);
 
   // ------------------------------
-  // Map symbols to API names
+  // Map symbols to API names (Yahoo-only for crypto)
   const apiSymbol = (symbol: string) => {
-    if (symbol === "BTC/USD") return "BTCUSDT";
-    if (symbol === "ETH/USD") return "ETHUSDT";
-    if (symbol === "XAU/USD") return "GC=F";
+    // For Yahoo provider use these tickers:
+    if (symbol === "BTC/USD") return "BTC-USD";
+    if (symbol === "ETH/USD") return "ETH-USD";
+    if (symbol === "XAU/USD") return "GC=F"; // gold continuous futures on Yahoo works
     return symbol;
   };
 
   // ------------------------------
-  // Fetch live prices
+  // Fetch live prices (Yahoo only for crypto and others)
   useEffect(() => {
     let isMounted = true;
 
@@ -77,12 +78,8 @@ export default function Home() {
         const last = livePrices[symbol]?.lastUpdated ?? 0;
         if (now - last >= REFRESH_INTERVAL) {
           try {
-            const provider =
-              symbol.includes("/USD") && symbol !== "XAU/USD"
-                ? "binance"
-                : symbol === "XAU/USD"
-                ? "yahoo"
-                : "yahoo";
+            // Always use Yahoo as provider here (crypto included)
+            const provider = "yahoo";
 
             const data = await fetchStockData(apiSymbol(symbol), provider as any);
             if (!isMounted) return;
@@ -168,11 +165,8 @@ export default function Home() {
       for (const symbol of symbols) {
         try {
           const provider =
-            symbol.includes("/USD") && symbol !== "XAU/USD"
-              ? "binance"
-              : symbol === "XAU/USD"
-              ? "yahoo"
-              : "yahoo";
+            // Use Yahoo for everything (crypto + others)
+            "yahoo";
 
           const live = livePrices[symbol];
           const prevClose = live?.previousClose ?? 0;

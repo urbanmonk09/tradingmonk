@@ -34,7 +34,16 @@ export default function Watchlist() {
   >({});
 
   // ------------------------------
-  // Fetch live prices
+  // Map symbols to Yahoo-friendly tickers (use Yahoo for crypto)
+  const apiSymbol = (symbol: string) => {
+    if (symbol === "BTC/USD") return "BTC-USD";
+    if (symbol === "ETH/USD") return "ETH-USD";
+    if (symbol === "XAU/USD") return "GC=F";
+    return symbol;
+  };
+
+  // ------------------------------
+  // Fetch live prices (Yahoo only)
   useEffect(() => {
     let isMounted = true;
 
@@ -44,16 +53,8 @@ export default function Watchlist() {
         const last = livePrices[s.symbol]?.lastUpdated ?? 0;
         if (now - last >= REFRESH_INTERVAL) {
           try {
-            const provider =
-              s.symbol.includes("/USD") && s.symbol !== "XAU/USD"
-                ? "binance"
-                : s.symbol === "XAU/USD"
-                ? "finnhub"
-                : "yahoo";
-            const data = await fetchStockData(
-              s.symbol === "BTC/USD" ? "BTCUSDT" : s.symbol === "ETH/USD" ? "ETHUSDT" : s.symbol === "XAU/USD" ? "XAUUSD" : s.symbol,
-              provider as any
-            );
+            const provider = "yahoo";
+            const data = await fetchStockData(apiSymbol(s.symbol), provider as any);
             if (!isMounted) return;
             setLivePrices((prev) => ({
               ...prev,
