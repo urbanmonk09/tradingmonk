@@ -6,12 +6,17 @@ import { fetchStockData } from "../src/api/fetchStockData";
 import { generateSMCSignal, StockDisplay } from "../src/utils/xaiLogic";
 import NotificationToast from "../src/components/NotificationToast";
 import { useRouter } from "next/navigation";
-import { api } from "../convex/_generated/api";
-import { useUser } from "@clerk/nextjs";
-import { useMutation, useQuery } from "convex/react";
+
+// 🔥 Firebase
+import { auth } from "../firebase/firebase";
+import { onAuthStateChanged } from "firebase/auth";
+import {
+  saveTradeToFirestore,
+  getUserTrades,
+} from "../firebase/firestoreActions";
 
 // ------------------------------
-// Symbols for Home (4 max)
+// Symbols
 const homeSymbols = {
   stock: ["RELIANCE.NS", "TCS.NS", "INFY.NS"],
   index: ["^NSEI", "^NSEBANK"],
@@ -19,7 +24,7 @@ const homeSymbols = {
   commodity: ["XAU/USD"],
 };
 
-const REFRESH_INTERVAL = 180000; // 3 min
+const REFRESH_INTERVAL = 180000;
 
 export default function Home() {
   const [stockData, setStockData] = useState<StockDisplay[]>([]);
@@ -30,24 +35,31 @@ export default function Home() {
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<StockDisplay[]>([]);
   const [toast, setToast] = useState<{ msg: string; bg?: string } | null>(null);
+  const [firebaseUser, setFirebaseUser] = useState<any>(null);
+  const [savedTrades, setSavedTrades] = useState<any[]>([]);
 
   const lastSignalsRef = useRef<Record<string, string>>({});
-  const { user, isLoaded } = useUser();
   const router = useRouter();
-  const userEmail =
-    user?.primaryEmailAddress?.emailAddress ??
-    user?.emailAddresses?.[0]?.emailAddress ??
-    "";
 
-  // ------------------------------
-  // Convex queries/mutations
-  const savedTradesRaw =
-    useQuery(api.trades.getUserTrades, userEmail ? { userEmail } : "skip") ??
-    [];
-  const saveTrade = useMutation(api.trades.saveTrade);
+  // ----------------------------------
+  // Firebase Auth Listener
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      setFirebaseUser(user);
 
-  // ------------------------------
-  // Load last signals from localStorage
+      if (user?.email) {
+        const trades = await getUserTrades(user.email);
+        setSavedTrades(trades);
+      }
+    });
+
+    return () => unsub();
+  }, []);
+
+  const userEmail = firebaseUser?.email ?? "";
+
+  // ----------------------------------
+  // Load localStorage signals
   useEffect(() => {
     try {
       const raw =
@@ -60,8 +72,8 @@ export default function Home() {
     }
   }, []);
 
-  // ------------------------------
-  // Map symbols to API names (Yahoo-only for crypto)
+  // ----------------------------------
+  // API symbol mapper
   const apiSymbol = (symbol: string) => {
     if (symbol === "BTC/USD") return "BTC-USD";
     if (symbol === "ETH/USD") return "ETH-USD";
@@ -69,8 +81,8 @@ export default function Home() {
     return symbol;
   };
 
-  // ------------------------------
-  // Fetch live prices (Yahoo only)
+  // ----------------------------------
+  // Fetch live prices
   useEffect(() => {
     let isMounted = true;
 
@@ -85,6 +97,7 @@ export default function Home() {
       const now = Date.now();
       for (const symbol of allSymbols) {
         const last = livePrices[symbol]?.lastUpdated ?? 0;
+
         if (now - last >= REFRESH_INTERVAL) {
           try {
             const provider = "yahoo";
@@ -112,14 +125,15 @@ export default function Home() {
 
     fetchAllPrices();
     const interval = setInterval(fetchAllPrices, 10000);
+
     return () => {
       isMounted = false;
       clearInterval(interval);
     };
   }, [livePrices]);
 
-  // ------------------------------
-  // Notify & save trades
+  // ----------------------------------
+  // Notify + Save Trade
   const maybeNotifyAndSave = async (
     symbol: string,
     provider: string,
@@ -137,6 +151,7 @@ export default function Home() {
         : "HOLD";
 
     if (lastSignalsRef.current[symbol] === normalizedSignal) return;
+
     lastSignalsRef.current[symbol] = normalizedSignal;
     if (typeof window !== "undefined")
       localStorage.setItem(
@@ -144,17 +159,15 @@ export default function Home() {
         JSON.stringify(lastSignalsRef.current)
       );
 
-    const isPro = Boolean(
-      user?.publicMetadata?.isPro || (user as any)?.isPro
-    );
-
-    if (isPro && typeof window !== "undefined" && "Notification" in window) {
+    // 🔥 Push Notification (Only if logged in)
+    if (firebaseUser && typeof window !== "undefined" && "Notification" in window) {
       if (Notification.permission === "granted") {
         new Notification(`${normalizedSignal} signal - ${symbol}`, {
           body: `${symbol} ${currentPrice ?? ""}`,
         });
-      } else if (Notification.permission !== "denied")
+      } else if (Notification.permission !== "denied") {
         await Notification.requestPermission();
+      }
     }
 
     setToast({
@@ -162,8 +175,9 @@ export default function Home() {
       bg: normalizedSignal === "BUY" ? "bg-green-600" : "bg-red-600",
     });
 
-    if (isPro && userEmail) {
-      await saveTrade({
+    // 🔥 Save to Firestore for logged in users
+    if (firebaseUser?.email) {
+      await saveTradeToFirestore({
         userEmail,
         symbol,
         type: symbol.startsWith("^")
@@ -184,8 +198,8 @@ export default function Home() {
     }
   };
 
-  // ------------------------------
-  // Load Home Data
+  // ----------------------------------
+  // Load Home Screen Data
   const loadData = async () => {
     setLoading(true);
     const out: StockDisplay[] = [];
@@ -240,7 +254,7 @@ export default function Home() {
                 : "ACTIVE",
           };
 
-          const prevHitTrade = savedTradesRaw.find(
+          const prevHitTrade = savedTrades.find(
             (t) =>
               t.symbol.replace(".NS", "") === symbol.replace(".NS", "") &&
               t.status === "target_hit"
@@ -275,8 +289,8 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [livePrices]);
 
-  // ------------------------------
-  // Search logic
+  // ----------------------------------
+  // Search
   const handleSearch = () => {
     const term = search.trim().toLowerCase();
     if (!term) {
@@ -289,7 +303,7 @@ export default function Home() {
     setSearchResults(filtered);
   };
 
-  // ------------------------------
+  // ----------------------------------
   // Render
   return (
     <div className="p-6 bg-gray-100 min-h-screen">
@@ -301,12 +315,15 @@ export default function Home() {
         />
       )}
 
+      {/* Watchlist Button */}
       <div className="mb-4">
         <button
           onClick={() => {
-            if (!isLoaded) return;
-            if (user) router.push("/watchlist");
-            else setToast({ msg: "Please log in first!", bg: "bg-red-600" });
+            if (!firebaseUser) {
+              setToast({ msg: "Please login first!", bg: "bg-red-600" });
+              return;
+            }
+            router.push("/watchlist");
           }}
           className="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600"
         >
@@ -330,6 +347,7 @@ export default function Home() {
         </button>
       </div>
 
+      {/* Cards */}
       {loading ? (
         <div>Loading…</div>
       ) : (searchResults.length ? searchResults : stockData).map((s) => (

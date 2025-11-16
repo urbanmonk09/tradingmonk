@@ -1,33 +1,18 @@
-"use client"
-import "./globals.css";
-import { AuthProvider, AuthContext } from "../src/context/AuthContext";
-import Navbar from "../src/components/Navbar";
-import { ConvexProvider } from "convex/react";
-import { convex } from "@/lib/convexClient";
+"use client";
 
-import {
-  ClerkProvider,
-  SignInButton,
-  SignUpButton,
-  SignedIn,
-  SignedOut,
-  UserButton,
-} from '@clerk/nextjs'
-import { ConvexClientProvider } from "../app/ConvexClientProvider";
+import "./globals.css";
+import AuthProvider from "../src/context/AuthContext";
+import Navbar from "../src/components/Navbar";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <ClerkProvider>
     <html lang="en">
       <body>
-         <ConvexClientProvider>
-          <AuthProvider>
+        <AuthProvider>
           <Navbar />
           <main className="p-4">{children}</main>
-          </AuthProvider>
-        </ConvexClientProvider>
+        </AuthProvider>
       </body>
     </html>
-    </ClerkProvider>
   );
 }

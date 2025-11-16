@@ -1,38 +1,22 @@
+// context/AuthContext.tsx
 "use client";
 
-import React, { createContext, useContext, ReactNode } from "react";
-import { useUser } from "@clerk/nextjs";
+import React, { createContext, useEffect, useState } from "react";
+import { auth } from "@/firebase/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 
-interface AuthContextType {
-  user: ReturnType<typeof useUser>["user"] | null;
-  isLoaded: boolean;
-  isPro: boolean;
-  userEmail: string | null;
-}
+export const AuthContext = createContext<any>(null);
 
-export const AuthContext = createContext<AuthContextType>({
-  user: null,
-  isLoaded: false,
-  isPro: false,
-  userEmail: null,
-});
+export default function AuthProvider({ children }: any) {
+  const [user, setUser] = useState<any>(null);
 
-export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  const { user, isLoaded } = useUser();
-
-  const userEmail =
-    user?.primaryEmailAddress?.emailAddress ??
-    user?.emailAddresses?.[0]?.emailAddress ??
-    
-    null;
-
-  const isPro = Boolean(user?.publicMetadata?.isPro);
+  useEffect(() => {
+    return onAuthStateChanged(auth, (u) => setUser(u));
+  }, []);
 
   return (
-    <AuthContext.Provider value={{ user, isLoaded, isPro, userEmail }}>
+    <AuthContext.Provider value={{ user }}>
       {children}
     </AuthContext.Provider>
   );
-};
-
-export const useAuth = () => useContext(AuthContext);
+}

@@ -1,18 +1,25 @@
 "use client";
-import React from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import {
-  SignInButton,
-  SignUpButton,
-  SignedIn,
-  SignedOut,
-  UserButton,
-} from "@clerk/nextjs";
+import { auth } from "@/firebase/firebase";
+import { onAuthStateChanged, signOut } from "firebase/auth";
 
 export default function Navbar() {
+  const [user, setUser] = useState<any>(null);
+
+  useEffect(() => {
+    // Listen to user changes
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   return (
     <nav className="backdrop-blur-md bg-gray-900/80 border-b border-white/10 text-white px-6 py-4 sticky top-0 z-50 shadow-lg">
       <div className="max-w-7xl mx-auto flex justify-between items-center">
+        
         {/* Logo */}
         <Link
           href="/"
@@ -21,30 +28,42 @@ export default function Navbar() {
           KlickTrading
         </Link>
 
-        {/* Right side */}
+        {/* Right Side */}
         <div className="flex gap-4 items-center">
+          {/* If no user - show login/signup */}
+          {!user && (
+            <>
+              <Link
+                href="/login"
+                className="px-4 py-2 rounded-full text-sm font-semibold bg-white/10 hover:bg-white/20 border border-white/20 transition"
+              >
+                Login
+              </Link>
 
-          <SignedOut>
-            <SignInButton mode="modal">
-              <button className="px-4 py-2 rounded-full text-sm font-semibold bg-white/10 hover:bg-white/20 border border-white/20 transition">
-                Sign In
-              </button>
-            </SignInButton>
-
-            <SignUpButton mode="modal">
-              <button className="px-5 py-2 rounded-full text-sm font-semibold bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-md transition">
+              <Link
+                href="/signup"
+                className="px-5 py-2 rounded-full text-sm font-semibold bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-md transition"
+              >
                 Sign Up
-              </button>
-            </SignUpButton>
-          </SignedOut>
+              </Link>
+            </>
+          )}
 
-          <SignedIn>
-            <UserButton appearance={{
-              elements: {
-                avatarBox: "w-10 h-10",
-              },
-            }} />
-          </SignedIn>
+          {/* If logged in - show profile + logout */}
+          {user && (
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-gray-300">
+                {user.email}
+              </span>
+
+              <button
+                onClick={() => signOut(auth)}
+                className="px-4 py-2 rounded-full text-sm font-semibold bg-red-600/80 hover:bg-red-700 transition"
+              >
+                Logout
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </nav>
