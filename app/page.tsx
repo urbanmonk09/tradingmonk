@@ -23,7 +23,9 @@ const REFRESH_INTERVAL = 180000; // 3 min
 
 export default function Home() {
   const [stockData, setStockData] = useState<StockDisplay[]>([]);
-  const [livePrices, setLivePrices] = useState<Record<string, { price: number; previousClose: number; lastUpdated: number }>>({});
+  const [livePrices, setLivePrices] = useState<
+    Record<string, { price: number; previousClose: number; lastUpdated: number }>
+  >({});
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<StockDisplay[]>([]);
@@ -32,18 +34,26 @@ export default function Home() {
   const lastSignalsRef = useRef<Record<string, string>>({});
   const { user, isLoaded } = useUser();
   const router = useRouter();
-  const userEmail = user?.primaryEmailAddress?.emailAddress ?? user?.emailAddresses?.[0]?.emailAddress ?? "";
+  const userEmail =
+    user?.primaryEmailAddress?.emailAddress ??
+    user?.emailAddresses?.[0]?.emailAddress ??
+    "";
 
   // ------------------------------
   // Convex queries/mutations
-  const savedTradesRaw = useQuery(api.trades.getUserTrades, userEmail ? { userEmail } : "skip") ?? [];
+  const savedTradesRaw =
+    useQuery(api.trades.getUserTrades, userEmail ? { userEmail } : "skip") ??
+    [];
   const saveTrade = useMutation(api.trades.saveTrade);
 
   // ------------------------------
   // Load last signals from localStorage
   useEffect(() => {
     try {
-      const raw = typeof window !== "undefined" ? localStorage.getItem("lastSignals") : null;
+      const raw =
+        typeof window !== "undefined"
+          ? localStorage.getItem("lastSignals")
+          : null;
       lastSignalsRef.current = raw ? JSON.parse(raw) : {};
     } catch {
       lastSignalsRef.current = {};
@@ -53,15 +63,14 @@ export default function Home() {
   // ------------------------------
   // Map symbols to API names (Yahoo-only for crypto)
   const apiSymbol = (symbol: string) => {
-    // For Yahoo provider use these tickers:
     if (symbol === "BTC/USD") return "BTC-USD";
     if (symbol === "ETH/USD") return "ETH-USD";
-    if (symbol === "XAU/USD") return "GC=F"; // gold continuous futures on Yahoo works
+    if (symbol === "XAU/USD") return "GC=F";
     return symbol;
   };
 
   // ------------------------------
-  // Fetch live prices (Yahoo only for crypto and others)
+  // Fetch live prices (Yahoo only)
   useEffect(() => {
     let isMounted = true;
 
@@ -78,13 +87,11 @@ export default function Home() {
         const last = livePrices[symbol]?.lastUpdated ?? 0;
         if (now - last >= REFRESH_INTERVAL) {
           try {
-            // Always use Yahoo as provider here (crypto included)
             const provider = "yahoo";
-
             const data = await fetchStockData(apiSymbol(symbol), provider as any);
             if (!isMounted) return;
 
-            setLivePrices(prev => ({
+            setLivePrices((prev) => ({
               ...prev,
               [symbol]: {
                 price: data.current ?? 0,
@@ -94,7 +101,10 @@ export default function Home() {
             }));
           } catch (err) {
             console.warn("Failed fetching price", symbol, err);
-            setToast({ msg: `Failed fetching ${symbol}`, bg: "bg-red-500" });
+            setToast({
+              msg: `Failed fetching ${symbol}`,
+              bg: "bg-red-500",
+            });
           }
         }
       }
@@ -102,12 +112,21 @@ export default function Home() {
 
     fetchAllPrices();
     const interval = setInterval(fetchAllPrices, 10000);
-    return () => { isMounted = false; clearInterval(interval); };
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, [livePrices]);
 
   // ------------------------------
   // Notify & save trades
-  const maybeNotifyAndSave = async (symbol: string, provider: string, trade: any, prevClose: number, currentPrice?: number) => {
+  const maybeNotifyAndSave = async (
+    symbol: string,
+    provider: string,
+    trade: any,
+    prevClose: number,
+    currentPrice?: number
+  ) => {
     const normalizedSignal: "BUY" | "SELL" | "HOLD" =
       trade.signal === "BUY" || trade.signal === "SELL"
         ? trade.signal
@@ -119,17 +138,29 @@ export default function Home() {
 
     if (lastSignalsRef.current[symbol] === normalizedSignal) return;
     lastSignalsRef.current[symbol] = normalizedSignal;
-    if (typeof window !== "undefined") localStorage.setItem("lastSignals", JSON.stringify(lastSignalsRef.current));
+    if (typeof window !== "undefined")
+      localStorage.setItem(
+        "lastSignals",
+        JSON.stringify(lastSignalsRef.current)
+      );
 
-    const isPro = Boolean(user?.publicMetadata?.isPro || (user as any)?.isPro);
+    const isPro = Boolean(
+      user?.publicMetadata?.isPro || (user as any)?.isPro
+    );
 
     if (isPro && typeof window !== "undefined" && "Notification" in window) {
       if (Notification.permission === "granted") {
-        new Notification(`${normalizedSignal} signal - ${symbol}`, { body: `${symbol} ${currentPrice ?? ""}` });
-      } else if (Notification.permission !== "denied") await Notification.requestPermission();
+        new Notification(`${normalizedSignal} signal - ${symbol}`, {
+          body: `${symbol} ${currentPrice ?? ""}`,
+        });
+      } else if (Notification.permission !== "denied")
+        await Notification.requestPermission();
     }
 
-    setToast({ msg: `${normalizedSignal} signal on ${symbol}`, bg: normalizedSignal === "BUY" ? "bg-green-600" : "bg-red-600" });
+    setToast({
+      msg: `${normalizedSignal} signal on ${symbol}`,
+      bg: normalizedSignal === "BUY" ? "bg-green-600" : "bg-red-600",
+    });
 
     if (isPro && userEmail) {
       await saveTrade({
@@ -141,7 +172,7 @@ export default function Home() {
           ? "crypto"
           : "stock",
         direction: normalizedSignal === "BUY" ? "long" : "short",
-        entryPrice: prevClose, // ✅ use previous close
+        entryPrice: prevClose,
         stopLoss: trade.stoploss ?? undefined,
         targets: trade.targets ?? undefined,
         confidence: trade.confidence ?? 0,
@@ -159,21 +190,30 @@ export default function Home() {
     setLoading(true);
     const out: StockDisplay[] = [];
 
-    for (const [type, symbols] of Object.entries(homeSymbols) as [keyof typeof homeSymbols, string[]][]) {
+    for (const [type, symbols] of Object.entries(
+      homeSymbols
+    ) as [keyof typeof homeSymbols, string[]][]) {
       let bestSymbol: StockDisplay | null = null;
 
       for (const symbol of symbols) {
         try {
-          const provider =
-            // Use Yahoo for everything (crypto + others)
-            "yahoo";
-
+          const provider = "yahoo";
           const live = livePrices[symbol];
           const prevClose = live?.previousClose ?? 0;
           const currentPrice = live?.price ?? prevClose;
 
-          const smc = generateSMCSignal({ current: currentPrice, previousClose: prevClose });
-          const stoploss = smc.signal === "BUY" ? prevClose * 0.985 : smc.signal === "SELL" ? prevClose * 1.015 : prevClose;
+          const smc = generateSMCSignal({
+            current: currentPrice,
+            previousClose: prevClose,
+          });
+
+          const stoploss =
+            smc.signal === "BUY"
+              ? prevClose * 0.985
+              : smc.signal === "SELL"
+              ? prevClose * 1.015
+              : prevClose;
+
           const targets =
             smc.signal === "BUY"
               ? [prevClose * 1.01, prevClose * 1.02, prevClose * 1.03]
@@ -200,17 +240,23 @@ export default function Home() {
                 : "ACTIVE",
           };
 
-          // Attach previous hit trade if exists
           const prevHitTrade = savedTradesRaw.find(
-            t => t.symbol.replace(".NS", "") === symbol.replace(".NS", "") && t.status === "target_hit"
+            (t) =>
+              t.symbol.replace(".NS", "") === symbol.replace(".NS", "") &&
+              t.status === "target_hit"
           );
           if (prevHitTrade) stock.hitStatus = "TARGET ✅";
 
-          if (!bestSymbol || stock.confidence > bestSymbol.confidence) {
+          if (!bestSymbol || stock.confidence > bestSymbol.confidence)
             bestSymbol = stock;
-          }
 
-          await maybeNotifyAndSave(stock.symbol, provider, { ...smc, stoploss, targets }, prevClose, currentPrice);
+          await maybeNotifyAndSave(
+            stock.symbol,
+            provider,
+            { ...smc, stoploss, targets },
+            prevClose,
+            currentPrice
+          );
         } catch (err) {
           console.warn("Error loading symbol:", symbol, err);
         }
@@ -237,7 +283,9 @@ export default function Home() {
       setSearchResults(stockData);
       return;
     }
-    const filtered = stockData.filter(s => s.symbol.toLowerCase().includes(term));
+    const filtered = stockData.filter((s) =>
+      s.symbol.toLowerCase().includes(term)
+    );
     setSearchResults(filtered);
   };
 
@@ -245,7 +293,13 @@ export default function Home() {
   // Render
   return (
     <div className="p-6 bg-gray-100 min-h-screen">
-      {toast && <NotificationToast message={toast.msg} bg={toast.bg} onClose={() => setToast(null)} />}
+      {toast && (
+        <NotificationToast
+          message={toast.msg}
+          bg={toast.bg}
+          onClose={() => setToast(null)}
+        />
+      )}
 
       <div className="mb-4">
         <button
@@ -264,16 +318,23 @@ export default function Home() {
       <div className="flex gap-2 mb-4">
         <input
           value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search stock or crypto..."
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Only pro members can search stocks, crypto, indices"
           className="flex-1 p-2 rounded border border-gray-300"
         />
-        <button onClick={handleSearch} className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+        <button
+          onClick={handleSearch}
+          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+        >
           Search
         </button>
       </div>
 
-      {loading ? <div>Loading…</div> : (searchResults.length ? searchResults : stockData).map(s => <StockCard key={s.symbol} {...s} />)}
+      {loading ? (
+        <div>Loading…</div>
+      ) : (searchResults.length ? searchResults : stockData).map((s) => (
+          <StockCard key={s.symbol} {...s} />
+        ))}
     </div>
   );
 }
