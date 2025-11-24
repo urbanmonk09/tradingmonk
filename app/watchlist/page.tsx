@@ -2,7 +2,6 @@
 
 import React, { useEffect, useState, useMemo, useRef, useContext } from "react";
 import Link from "next/link";
-import Fuse from "fuse.js";
 
 import StockCard from "../../src/components/StockCard";
 import { fetchStockData } from "../../src/api/fetchStockData";
@@ -13,7 +12,6 @@ import NotificationToast from "../../src/components/NotificationToast";
 
 import {
   getUserTrades as getUserTradesFromFirestore,
-  // saveTradeToFirestore // keep if you want to save trades from here
 } from "@/firebase/firestoreActions";
 import {
   getUserWatchlist,
@@ -37,31 +35,22 @@ export default function Watchlist() {
   const { user } = useContext(AuthContext);
   const userEmail = (user as any)?.email ?? (user as any)?.emailAddress ?? "";
 
-  // Live prices cache
   const [livePrices, setLivePrices] = useState<
     Record<string, { price: number; previousClose: number; lastUpdated: number }>
   >({});
 
-  // Saved trades (from Firestore)
   const [savedTrades, setSavedTrades] = useState<any[]>([]);
-
-  // User watchlist items (from Firestore)
   const [userWatchlist, setUserWatchlist] = useState<
     { id: string; userEmail: string; symbol: string; type: SymbolType }[]
   >([]);
-
-  // UI/search states
   const [search, setSearch] = useState("");
   const [filteredResults, setFilteredResults] = useState<StockDisplay[]>([]);
-  const [suggestions, setSuggestions] = useState<StockDisplay[]>([]);
   const [category, setCategory] = useState<"all" | "stock" | "crypto" | "index">(
     "all"
   );
   const [toast, setToast] = useState<{ msg: string; bg?: string } | null>(null);
-  const suggestionsRef = useRef<HTMLDivElement | null>(null);
 
   // ------------------------------
-  // Helper: map API symbol (yahoo-friendly)
   const apiSymbol = (symbol: string) => {
     if (symbol === "BTC/USD") return "BTC-USD";
     if (symbol === "ETH/USD") return "ETH-USD";
@@ -69,14 +58,12 @@ export default function Watchlist() {
     return symbol;
   };
 
-  // ------------------------------
-  // Load saved trades from Firestore when userEmail available
+  // Load saved trades
   useEffect(() => {
     if (!userEmail) {
       setSavedTrades([]);
       return;
     }
-
     let mounted = true;
     (async () => {
       try {
@@ -88,14 +75,12 @@ export default function Watchlist() {
         setSavedTrades([]);
       }
     })();
-
     return () => {
       mounted = false;
     };
   }, [userEmail]);
 
-  // ------------------------------
-  // Load user watchlist (Firebase)
+  // Load watchlist
   useEffect(() => {
     if (!userEmail) {
       setUserWatchlist([]);
@@ -106,7 +91,6 @@ export default function Watchlist() {
       try {
         const wl = await getUserWatchlist(userEmail);
         if (!mounted) return;
-        // normalize type to SymbolType if necessary
         const normalized = (wl ?? []).map((w: any) => ({
           id: w.id,
           userEmail: w.userEmail,
@@ -119,19 +103,16 @@ export default function Watchlist() {
         setUserWatchlist([]);
       }
     })();
-
     return () => {
       mounted = false;
     };
   }, [userEmail]);
 
   // ------------------------------
-  // Build combined symbol universe:
-  // defaultSymbols + file symbols + user watchlist (unique)
   const mappedExtraSymbols = allSymbols.map((s) => {
     let yahooSymbol = s.symbol;
     if (s.type === "crypto" && s.symbol.includes("BINANCE:")) {
-      const pair = s.symbol.split(":")[1]; // BTCUSDT
+      const pair = s.symbol.split(":")[1];
       const base = pair.replace("USDT", "");
       yahooSymbol = `${base}-USD`;
     }
@@ -153,16 +134,14 @@ export default function Watchlist() {
     (v, i, a) => a.findIndex((x) => x.symbol === v.symbol) === i
   );
 
-  // Symbols which are not in savedTrades (rendered as Live Prices grid)
   const symbolsWithoutTrades = uniqueSymbols.filter(
     (s) => !savedTrades.some((t: any) => t.symbol === s.symbol)
   );
 
   // ------------------------------
-  // Live price fetcher (for defaultSymbols + combinedSymbols used in page)
+  // Live price fetcher
   useEffect(() => {
     let isMounted = true;
-
     const allSymbolsToFetch = uniqueSymbols.map((s) => s.symbol);
 
     const fetchAllPrices = async () => {
@@ -195,11 +174,10 @@ export default function Watchlist() {
       isMounted = false;
       clearInterval(interval);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(uniqueSymbols.map((s) => s.symbol)), livePrices]);
 
   // ------------------------------
-  // Build tradesWithPrices from savedTrades + livePrices (same logic you had)
+  // Trades with live prices
   const tradesWithPrices = savedTrades.map((t: any) => {
     const live = livePrices[t.symbol] ?? { price: 0, previousClose: 0 };
     const prevClose = live.previousClose ?? t.entryPrice ?? 0;
@@ -226,72 +204,66 @@ export default function Watchlist() {
     };
   });
 
-  // ------------------------------
-  // Combined ranking logic (SMC scoring) — unchanged behaviour
-  const savedTradesForScoring: StockDisplay[] = tradesWithPrices.map((t: any) => {
-    const stockInput = {
-      symbol: t.symbol,
-      current: t.price ?? t.entryPrice ?? 0,
-      previousClose: t.previousClose ?? t.entryPrice ?? 0,
-      prices: t.prices ?? [],
-      highs: t.highs ?? [],
-      lows: t.lows ?? [],
-      volumes: t.volumes ?? [],
-    };
-
-    const signalResult = generateSMCSignal(stockInput);
-
-    return {
-      symbol: t.symbol,
-      signal: t.signal ?? "HOLD",
-      confidence: signalResult.confidence ?? 50,
-      explanation:
-        (t.explanation ?? "") +
-        (signalResult.explanation ? ` ${signalResult.explanation}` : ""),
-      price: t.price ?? t.entryPrice,
-      type: t.type ?? ("stock" as const),
-      support: t.support,
-      resistance: t.resistance,
-      stoploss: signalResult.stoploss ?? t.stoploss,
-      targets: signalResult.targets ?? t.targets,
-      hitStatus: t.hitStatus ?? signalResult.hitStatus,
-    };
-  });
-
-  const symbolsForScoring: StockDisplay[] = symbolsWithoutTrades.map((s) => {
-    const live = livePrices[s.symbol] ?? { price: 0, previousClose: 0 };
-    const prevClose = live.previousClose ?? live.price ?? 0;
-
-    const stockInput = {
-      symbol: s.symbol,
-      current: live.price ?? prevClose,
-      previousClose: prevClose,
-      prices: [],
-      highs: [],
-      lows: [],
-      volumes: [],
-    };
-
-    const signalResult = generateSMCSignal(stockInput);
-
-    return {
-      symbol: s.symbol,
-      signal: signalResult.signal ?? "HOLD",
-      confidence: signalResult.confidence ?? 50,
-      explanation: signalResult.explanation ?? "",
-      price: live.price ?? prevClose,
-      type: s.type ?? ("stock" as const),
-      support: prevClose * 0.995,
-      resistance: prevClose * 1.01,
-      stoploss: prevClose * 0.985,
-      targets: signalResult.targets ?? [prevClose],
-      hitStatus: signalResult.hitStatus ?? "ACTIVE",
-    } as StockDisplay;
-  });
-
   const combinedForRanking: StockDisplay[] = [
-    ...savedTradesForScoring,
-    ...symbolsForScoring,
+    ...tradesWithPrices.map((t: any) => {
+      const stockInput = {
+        symbol: t.symbol,
+        current: t.price ?? t.entryPrice ?? 0,
+        previousClose: t.previousClose ?? t.entryPrice ?? 0,
+        prices: t.prices ?? [],
+        highs: t.highs ?? [],
+        lows: t.lows ?? [],
+        volumes: t.volumes ?? [],
+      };
+
+      const signalResult = generateSMCSignal(stockInput);
+
+      return {
+        symbol: t.symbol,
+        signal: t.signal ?? "HOLD",
+        confidence: signalResult.confidence ?? 50,
+        explanation:
+          (t.explanation ?? "") +
+          (signalResult.explanation ? ` ${signalResult.explanation}` : ""),
+        price: t.price ?? t.entryPrice,
+        type: t.type ?? ("stock" as const),
+        support: t.support,
+        resistance: t.resistance,
+        stoploss: signalResult.stoploss ?? t.stoploss,
+        targets: signalResult.targets ?? t.targets,
+        hitStatus: t.hitStatus ?? signalResult.hitStatus,
+      };
+    }),
+    ...symbolsWithoutTrades.map((s) => {
+      const live = livePrices[s.symbol] ?? { price: 0, previousClose: 0 };
+      const prevClose = live.previousClose ?? live.price ?? 0;
+
+      const stockInput = {
+        symbol: s.symbol,
+        current: live.price ?? prevClose,
+        previousClose: prevClose,
+        prices: [],
+        highs: [],
+        lows: [],
+        volumes: [],
+      };
+
+      const signalResult = generateSMCSignal(stockInput);
+
+      return {
+        symbol: s.symbol,
+        signal: signalResult.signal ?? "HOLD",
+        confidence: signalResult.confidence ?? 50,
+        explanation: signalResult.explanation ?? "",
+        price: live.price ?? prevClose,
+        type: s.type ?? ("stock" as const),
+        support: prevClose * 0.995,
+        resistance: prevClose * 1.01,
+        stoploss: prevClose * 0.985,
+        targets: signalResult.targets ?? [prevClose],
+        hitStatus: signalResult.hitStatus ?? "ACTIVE",
+      } as StockDisplay;
+    }),
   ];
 
   const combinedSorted = [...combinedForRanking].sort(
@@ -301,6 +273,8 @@ export default function Watchlist() {
   const topFive = combinedSorted.slice(0, 5);
   const screenerList = combinedSorted.slice(5);
 
+  // ------------------------------
+  // Remaining Trades split
   const sortedTrades = [...tradesWithPrices].sort(
     (a: any, b: any) => (b.confidence ?? 0) - (a.confidence ?? 0)
   );
@@ -317,108 +291,6 @@ export default function Watchlist() {
       remainingTrades.push(t);
     }
   }
-
-  // ------------------------------
-  // Fuse.js fuzzy index (memoized on dataset length — same behaviour)
-  const fuseIndex = useMemo(() => {
-    const options: Fuse.IFuseOptions<StockDisplay> = {
-      keys: ["symbol"],
-      threshold: 0.35,
-      includeScore: true,
-    };
-    return new Fuse(combinedSorted, options);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [combinedSorted.length]);
-
-  // ------------------------------
-  // Search logic (fuzzy + category) with Pro gating
-  const handleSearch = (term?: string) => {
-    const isPro = Boolean((user as any)?.isPro);
-
-    if (!isPro) {
-      setToast({ msg: "Please upgrade to Pro to enable search.", bg: "bg-red-600" });
-      return;
-    }
-
-    const rawTerm = (term ?? search).toLowerCase().trim();
-    if (!rawTerm) {
-      setFilteredResults([]);
-      setSuggestions([]);
-      return;
-    }
-
-    const results = fuseIndex.search(rawTerm, { limit: 100 }).map((r) => r.item);
-    const catFiltered =
-      category === "all" ? results : results.filter((r) => r.type === category);
-
-    setFilteredResults(catFiltered);
-    setSuggestions(catFiltered.slice(0, 6));
-  };
-
-  const handleSelectSuggestion = (s: StockDisplay) => {
-    const isPro = Boolean((user as any)?.isPro);
-    if (!isPro) {
-      setToast({ msg: "Please upgrade to Pro to enable search.", bg: "bg-red-600" });
-      return;
-    }
-    setSearch(s.symbol);
-    setFilteredResults([s]);
-    setSuggestions([]);
-  };
-
-  // ------------------------------
-  // UI helpers: add/remove watchlist (calls Firestore then refresh local state)
-  const handleAddToWatchlist = async (symbol: string, type: SymbolType = "stock") => {
-    if (!userEmail) {
-      setToast({ msg: "Please login to add to watchlist.", bg: "bg-red-600" });
-      return;
-    }
-    try {
-      await addToWatchlist(userEmail, symbol, type);
-      setToast({ msg: `${symbol} added to watchlist`, bg: "bg-green-600" });
-      const wl = await getUserWatchlist(userEmail);
-      setUserWatchlist((wl ?? []).map((w: any) => ({ id: w.id, userEmail: w.userEmail, symbol: w.symbol, type: (w.type ?? "stock") })));
-    } catch (err) {
-      console.error(err);
-      setToast({ msg: "Failed to add to watchlist", bg: "bg-red-600" });
-    }
-  };
-
-  const handleRemoveFromWatchlist = async (id: string) => {
-    if (!userEmail) {
-      setToast({ msg: "Please login to remove from watchlist.", bg: "bg-red-600" });
-      return;
-    }
-    try {
-      await removeFromWatchlist(id);
-      setToast({ msg: `Removed from watchlist`, bg: "bg-yellow-600" });
-      const wl = await getUserWatchlist(userEmail);
-      setUserWatchlist((wl ?? []).map((w: any) => ({ id: w.id, userEmail: w.userEmail, symbol: w.symbol, type: (w.type ?? "stock") })));
-    } catch (err) {
-      console.error(err);
-      setToast({ msg: "Failed to remove from watchlist", bg: "bg-red-600" });
-    }
-  };
-
-  // ------------------------------
-  // Suggestions click outside handler
-  useEffect(() => {
-    const onDocClick = (e: MouseEvent) => {
-      if (!suggestionsRef.current) return;
-      if (!suggestionsRef.current.contains(e.target as Node)) {
-        setSuggestions([]);
-      }
-    };
-    document.addEventListener("click", onDocClick);
-    return () => document.removeEventListener("click", onDocClick);
-  }, []);
-
-  // Clear toast after timeout
-  useEffect(() => {
-    if (!toast) return;
-    const id = setTimeout(() => setToast(null), 3500);
-    return () => clearTimeout(id);
-  }, [toast]);
 
   // ------------------------------
   // Render
@@ -438,85 +310,18 @@ export default function Watchlist() {
         <p className="text-gray-500">Please log in to see your watchlist.</p>
       ) : (
         <>
-          {/* SEARCH + AUTOSUGGEST */}
+          {/* SEARCH INPUT (Pro logic remains, but no fuzzy search) */}
           <div className="mb-6">
             <div className="flex gap-2">
-              <div className="relative flex-1" ref={suggestionsRef}>
-                <input
-                  value={search}
-                  onChange={(e) => {
-                    setSearch(e.target.value);
-                    const isPro = Boolean((user as any)?.isPro);
-                    if (isPro && e.target.value.trim().length > 0) {
-                      const res = fuseIndex.search(e.target.value, { limit: 6 }).map((r) => r.item);
-                      const catFiltered = category === "all" ? res : res.filter((r) => r.type === category);
-                      setSuggestions(catFiltered.slice(0, 6));
-                    } else {
-                      setSuggestions([]);
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleSearch();
-                    }
-                  }}
-                  placeholder="Search symbols…"
-                  className="w-full px-4 py-2 rounded-lg border border-gray-300"
-                />
-
-                {suggestions.length > 0 && (
-                  <div className="absolute left-0 right-0 mt-1 bg-white shadow-lg rounded border z-50 max-h-72 overflow-auto">
-                    {suggestions.map((s) => (
-                      <div
-                        key={s.symbol}
-                        onClick={() => handleSelectSuggestion(s)}
-                        className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="font-medium">{s.symbol}</div>
-                          <div className="text-sm text-gray-500">{s.type}</div>
-                        </div>
-                        {s.explanation ? <div className="text-xs text-gray-500 truncate">{s.explanation}</div> : null}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <button onClick={() => handleSearch()} className="bg-blue-600 text-white px-4 py-2 rounded">
-                Search
-              </button>
-            </div>
-
-            {/* Category filter */}
-            <div className="flex gap-2 mt-3">
-              {["all", "stock", "crypto", "index"].map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => {
-                    setCategory(cat as any);
-                    if (search.trim().length > 0) handleSearch(search);
-                  }}
-                  className={`px-3 py-1 rounded-lg border ${category === cat ? "bg-black text-white" : "bg-white"}`}
-                >
-                  {cat.toUpperCase()}
-                </button>
-              ))}
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search symbols…"
+                className="w-full px-4 py-2 rounded-lg border border-gray-300"
+              />
+              <button className="bg-blue-600 text-white px-4 py-2 rounded">Search</button>
             </div>
           </div>
-
-          {/* If searching, show filtered */}
-          {filteredResults.length > 0 && (
-            <div className="mb-6">
-              <h3 className="text-lg font-semibold mb-2">Search Results</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredResults.map((s) => (
-                  <StockCard key={s.symbol} {...s} />
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* TOP 5 */}
           {topFive.length > 0 && (
