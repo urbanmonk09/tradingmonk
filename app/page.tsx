@@ -15,8 +15,6 @@ import {
   getUserTrades,
 } from "../firebase/firestoreActions";
 
-// ------------------------------
-// Symbols
 const homeSymbols = {
   stock: ["RELIANCE.NS", "TCS.NS", "INFY.NS"],
   index: ["^NSEI", "^NSEBANK"],
@@ -26,10 +24,20 @@ const homeSymbols = {
 
 const REFRESH_INTERVAL = 180000;
 
+// 🔥 FIX → Normalize signals so SELL works everywhere
+const normalizeSignal = (s: string): "BUY" | "SELL" | "HOLD" => {
+  if (!s) return "HOLD";
+  const x = s.toUpperCase();
+
+  if (x.includes("SELL") || x.includes("SHORT")) return "SELL";
+  if (x.includes("BUY") || x.includes("LONG")) return "BUY";
+
+  return "HOLD";
+};
+
 export default function Home() {
   const [stockData, setStockData] = useState<StockDisplay[]>([]);
-  const [livePrices, setLivePrices] = useState<
-  Record<
+  const [livePrices, setLivePrices] = useState<Record<
     string,
     {
       price: number;
@@ -40,9 +48,7 @@ export default function Home() {
       lows?: number[];
       volumes?: number[];
     }
-  >
->({});
-
+  >>({});
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<StockDisplay[]>([]);
@@ -53,12 +59,9 @@ export default function Home() {
   const lastSignalsRef = useRef<Record<string, string>>({});
   const router = useRouter();
 
-  // ----------------------------------
-  // Firebase Auth Listener
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
-
       if (user?.email) {
         const trades = await getUserTrades(user.email);
         setSavedTrades(trades);
@@ -70,22 +73,15 @@ export default function Home() {
 
   const userEmail = firebaseUser?.email ?? "";
 
-  // ----------------------------------
-  // Load localStorage signals
   useEffect(() => {
     try {
-      const raw =
-        typeof window !== "undefined"
-          ? localStorage.getItem("lastSignals")
-          : null;
+      const raw = typeof window !== "undefined" ? localStorage.getItem("lastSignals") : null;
       lastSignalsRef.current = raw ? JSON.parse(raw) : {};
     } catch {
       lastSignalsRef.current = {};
     }
   }, []);
 
-  // ----------------------------------
-  // API symbol mapper
   const apiSymbol = (symbol: string) => {
     if (symbol === "BTC/USD") return "BTC-USD";
     if (symbol === "ETH/USD") return "ETH-USD";
@@ -93,8 +89,6 @@ export default function Home() {
     return symbol;
   };
 
-  // ----------------------------------
-  // Fetch live prices
   useEffect(() => {
     let isMounted = true;
 
@@ -122,14 +116,15 @@ export default function Home() {
                 price: data.current ?? 0,
                 previousClose: data.previousClose ?? data.current ?? 0,
                 lastUpdated: now,
+                prices: data.prices,
+                highs: data.highs,
+                lows: data.lows,
+                volumes: data.volumes,
               },
             }));
           } catch (err) {
             console.warn("Failed fetching price", symbol, err);
-            setToast({
-              msg: `Failed fetching ${symbol}`,
-              bg: "bg-red-500",
-            });
+            setToast({ msg: `Failed fetching ${symbol}`, bg: "bg-red-500" });
           }
         }
       }
@@ -144,8 +139,7 @@ export default function Home() {
     };
   }, [livePrices]);
 
-  // ----------------------------------
-  // Notify + Save Trade
+  // FIX: Preserve SELL signals in notifications & Firestore
   const maybeNotifyAndSave = async (
     symbol: string,
     provider: string,
@@ -153,25 +147,15 @@ export default function Home() {
     prevClose: number,
     currentPrice?: number
   ) => {
-    const normalizedSignal: "BUY" | "SELL" | "HOLD" =
-      trade.signal === "BUY" || trade.signal === "SELL"
-        ? trade.signal
-        : trade.signal === "long"
-        ? "BUY"
-        : trade.signal === "short"
-        ? "SELL"
-        : "HOLD";
+    const normalizedSignal = normalizeSignal(trade.signal);
 
     if (lastSignalsRef.current[symbol] === normalizedSignal) return;
 
     lastSignalsRef.current[symbol] = normalizedSignal;
-    if (typeof window !== "undefined")
-      localStorage.setItem(
-        "lastSignals",
-        JSON.stringify(lastSignalsRef.current)
-      );
 
-    // 🔥 Push Notification (Only if logged in)
+    if (typeof window !== "undefined")
+      localStorage.setItem("lastSignals", JSON.stringify(lastSignalsRef.current));
+
     if (firebaseUser && typeof window !== "undefined" && "Notification" in window) {
       if (Notification.permission === "granted") {
         new Notification(`${normalizedSignal} signal - ${symbol}`, {
@@ -187,7 +171,6 @@ export default function Home() {
       bg: normalizedSignal === "BUY" ? "bg-green-600" : "bg-red-600",
     });
 
-    // 🔥 Save to Firestore for logged in users
     if (firebaseUser?.email) {
       await saveTradeToFirestore({
         userEmail,
@@ -197,7 +180,7 @@ export default function Home() {
           : symbol.includes("/USD") || symbol === "XAU/USD"
           ? "crypto"
           : "stock",
-        direction: normalizedSignal === "BUY" ? "long" : "short",
+        direction: normalizedSignal === "BUY" ? "long" : "short", // FIX
         entryPrice: prevClose,
         stopLoss: trade.stoploss ?? undefined,
         targets: trade.targets ?? undefined,
@@ -210,91 +193,88 @@ export default function Home() {
     }
   };
 
-  // ----------------------------------
-  // Load Home Screen Data
   const loadData = async () => {
     setLoading(true);
     const out: StockDisplay[] = [];
 
-    for (const [type, symbols] of Object.entries(
-      homeSymbols
-    ) as [keyof typeof homeSymbols, string[]][]) {
+    for (const [type, symbols] of Object.entries(homeSymbols) as [
+      keyof typeof homeSymbols,
+      string[]
+    ][]) {
       let bestSymbol: StockDisplay | null = null;
 
       for (const symbol of symbols) {
- try {
-  const provider = "yahoo";
-  const live = livePrices[symbol] ?? {};
-  const prevClose = live.previousClose ?? 0;
-  const currentPrice = live.price ?? prevClose;
+        try {
+          const provider = "yahoo";
+          const live = livePrices[symbol] ?? {};
+          const prevClose = live.previousClose ?? 0;
+          const currentPrice = live.price ?? prevClose;
 
-  // Compute full SMC signal using historical data
-  const smc = generateSMCSignal({
-    current: currentPrice,
-    previousClose: prevClose,
-    prices: live.prices ?? [],
-    highs: live.highs ?? [],
-    lows: live.lows ?? [],
-    volumes: live.volumes ?? [],
-  });
+          const smc = generateSMCSignal({
+            current: currentPrice,
+            previousClose: prevClose,
+            prices: live.prices ?? [],
+            highs: live.highs ?? [],
+            lows: live.lows ?? [],
+            volumes: live.volumes ?? [],
+          });
 
-  // --- Fixed Stoploss & Targets based on previous close ---
-  const stoploss = prevClose * 0.995; // -0.50%
-  const targets =
-    smc.signal === "BUY"
-      ? [
-          prevClose * 1.0078, // +0.78%
-          prevClose * 1.01,   // +1%
-          prevClose * 1.0132, // +1.32%
-        ]
-      : smc.signal === "SELL"
-      ? [
-          prevClose * 0.9922, // -0.78%
-          prevClose * 0.99,   // -1%
-          prevClose * 0.9868, // -1.32%
-        ]
-      : [prevClose]; // HOLD
+          // 🔥 FIX: APPLY SELL LOGIC
+          const finalSignal = normalizeSignal(smc.signal);
 
-  const stock: StockDisplay = {
-    symbol: symbol.replace(".NS", ""),
-    signal: smc.signal,
-    confidence: smc.confidence,
-    explanation: smc.explanation,
-    price: currentPrice,
-    type: type as StockDisplay["type"],
-    support: prevClose * 0.995,
-    resistance: prevClose * 1.01,
-    stoploss,
-    targets,
-    hitStatus:
-      currentPrice >= Math.max(...targets)
-        ? "TARGET ✅"
-        : currentPrice <= stoploss
-        ? "STOP ❌"
-        : "ACTIVE",
-  };
+          const stoploss =
+            finalSignal === "SELL" ? prevClose * 1.005 : prevClose * 0.995;
 
-  const prevHitTrade = savedTrades.find(
-    (t) =>
-      t.symbol.replace(".NS", "") === symbol.replace(".NS", "") &&
-      t.status === "target_hit"
-  );
-  if (prevHitTrade) stock.hitStatus = "TARGET ✅";
+          const targets =
+            finalSignal === "SELL"
+              ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 0.9868]
+              : finalSignal === "BUY"
+              ? [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]
+              : [prevClose];
 
-  if (!bestSymbol || stock.confidence > bestSymbol.confidence) bestSymbol = stock;
+          const stock: StockDisplay = {
+            symbol: symbol.replace(".NS", ""),
+            signal: finalSignal,
+            confidence: smc.confidence,
+            explanation: smc.explanation,
+            price: currentPrice,
+            type: type as StockDisplay["type"],
+            support: prevClose * 0.995,
+            resistance: prevClose * 1.01,
+            stoploss,
+            targets,
+            hitStatus:
+  (finalSignal === "BUY" && currentPrice >= Math.max(...targets)) ||
+  (finalSignal === "SELL" && currentPrice <= Math.min(...targets))
+    ? "TARGET ✅"
+    : (finalSignal === "BUY" && currentPrice <= stoploss) ||
+      (finalSignal === "SELL" && currentPrice >= stoploss)
+    ? "STOP ❌"
+    : "ACTIVE",
 
-  await maybeNotifyAndSave(
-    stock.symbol,
-    provider,
-    { ...smc, stoploss, targets },
-    prevClose,
-    currentPrice
-  );
-} catch (err) {
-  console.warn("Error loading symbol:", symbol, err);
-}
+          };
+
+          const prevHitTrade = savedTrades.find(
+            (t) =>
+              t.symbol.replace(".NS", "") === symbol.replace(".NS", "") &&
+              t.status === "target_hit"
+          );
+          if (prevHitTrade) stock.hitStatus = "TARGET ✅";
 
 
+          if (!bestSymbol || stock.confidence > bestSymbol.confidence)
+            bestSymbol = stock;
+
+          await maybeNotifyAndSave(
+            stock.symbol,
+            provider,
+            { ...smc, signal: finalSignal, stoploss, targets },
+            prevClose,
+            currentPrice
+          );
+        } catch (err) {
+          console.warn("Error loading symbol:", symbol, err);
+        }
       }
 
       if (bestSymbol) out.push(bestSymbol);
@@ -310,8 +290,6 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [livePrices]);
 
-  // ----------------------------------
-  // Search
   const handleSearch = () => {
     const term = search.trim().toLowerCase();
     if (!term) {
@@ -324,8 +302,6 @@ export default function Home() {
     setSearchResults(filtered);
   };
 
-  // ----------------------------------
-  // Render
   return (
     <div className="p-6 bg-gray-100 min-h-screen">
       {toast && (

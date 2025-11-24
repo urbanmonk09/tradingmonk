@@ -187,30 +187,45 @@ export default function Watchlist() {
   // ------------------------------
   // Trades with live prices
   const tradesWithPrices = savedTrades.map((t: any) => {
-    const live = livePrices[t.symbol] ?? { price: 0, previousClose: 0 };
-    const prevClose = live.previousClose ?? t.entryPrice ?? 0;
+  const live = livePrices[t.symbol] ?? { price: 0, previousClose: 0 };
+  const prevClose = live.previousClose ?? t.entryPrice ?? 0;
+  const price = live.price ?? t.entryPrice ?? prevClose;
 
-    const stoploss = prevClose * 0.985;
-    const targets = [prevClose * 1.01, prevClose * 1.02, prevClose * 1.03];
-    const support = prevClose * 0.995;
-    const resistance = prevClose * 1.01;
+  const isShort = t.direction === "short";
 
-    let hitStatus: "ACTIVE" | "TARGET ✅" | "STOP ❌" = "ACTIVE";
-    if (live.price <= stoploss) hitStatus = "STOP ❌";
-    else if (live.price >= Math.max(...targets)) hitStatus = "TARGET ✅";
+  // Short and long have opposite stop/target logic
+  const stoploss = isShort ? prevClose * 1.005 : prevClose * 0.995;
+  const targets = isShort
+    ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 0.9868] // SHORT TARGETS
+    : [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]; // LONG TARGETS
 
-    return {
-      ...t,
-      price: live.price ?? t.entryPrice,
-      stoploss,
-      targets,
-      support,
-      resistance,
-      hitStatus,
-      signal:
-        t.direction === "long" ? "BUY" : t.direction === "short" ? "SELL" : "HOLD",
-    };
-  });
+  const support = prevClose * 0.995;
+  const resistance = prevClose * 1.01;
+
+  let hitStatus: "ACTIVE" | "TARGET ✅" | "STOP ❌" = "ACTIVE";
+
+  if (!isShort) {
+    if (price >= Math.max(...targets)) hitStatus = "TARGET ✅";
+    else if (price <= stoploss) hitStatus = "STOP ❌";
+  } else {
+    if (price <= Math.min(...targets)) hitStatus = "TARGET ✅";
+    else if (price >= stoploss) hitStatus = "STOP ❌";
+  }
+
+  return {
+    ...t,
+    price,
+    stoploss,
+    targets,
+    support,
+    resistance,
+    hitStatus,
+    // 🚨 this preserves short trades visually
+    signal: isShort ? "SELL" : "BUY",
+    type: t.type ?? "stock",
+  };
+});
+
 
   const combinedForRanking: StockDisplay[] = [
   // --- Trades that already have price history ---
