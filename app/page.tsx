@@ -29,8 +29,20 @@ const REFRESH_INTERVAL = 180000;
 export default function Home() {
   const [stockData, setStockData] = useState<StockDisplay[]>([]);
   const [livePrices, setLivePrices] = useState<
-    Record<string, { price: number; previousClose: number; lastUpdated: number }>
-  >({});
+  Record<
+    string,
+    {
+      price: number;
+      previousClose: number;
+      lastUpdated: number;
+      prices?: number[];
+      highs?: number[];
+      lows?: number[];
+      volumes?: number[];
+    }
+  >
+>({});
+
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<StockDisplay[]>([]);
@@ -210,70 +222,79 @@ export default function Home() {
       let bestSymbol: StockDisplay | null = null;
 
       for (const symbol of symbols) {
-        try {
-          const provider = "yahoo";
-          const live = livePrices[symbol];
-          const prevClose = live?.previousClose ?? 0;
-          const currentPrice = live?.price ?? prevClose;
+ try {
+  const provider = "yahoo";
+  const live = livePrices[symbol] ?? {};
+  const prevClose = live.previousClose ?? 0;
+  const currentPrice = live.price ?? prevClose;
 
-          const smc = generateSMCSignal({
-            current: currentPrice,
-            previousClose: prevClose,
-          });
+  // Compute full SMC signal using historical data
+  const smc = generateSMCSignal({
+    current: currentPrice,
+    previousClose: prevClose,
+    prices: live.prices ?? [],
+    highs: live.highs ?? [],
+    lows: live.lows ?? [],
+    volumes: live.volumes ?? [],
+  });
 
-          const stoploss =
-            smc.signal === "BUY"
-              ? prevClose * 0.985
-              : smc.signal === "SELL"
-              ? prevClose * 1.015
-              : prevClose;
+  // --- Fixed Stoploss & Targets based on previous close ---
+  const stoploss = prevClose * 0.995; // -0.50%
+  const targets =
+    smc.signal === "BUY"
+      ? [
+          prevClose * 1.0078, // +0.78%
+          prevClose * 1.01,   // +1%
+          prevClose * 1.0132, // +1.32%
+        ]
+      : smc.signal === "SELL"
+      ? [
+          prevClose * 0.9922, // -0.78%
+          prevClose * 0.99,   // -1%
+          prevClose * 0.9868, // -1.32%
+        ]
+      : [prevClose]; // HOLD
 
-          const targets =
-            smc.signal === "BUY"
-              ? [prevClose * 1.01, prevClose * 1.02, prevClose * 1.03]
-              : smc.signal === "SELL"
-              ? [prevClose * 0.99, prevClose * 0.98, prevClose * 0.97]
-              : [prevClose];
+  const stock: StockDisplay = {
+    symbol: symbol.replace(".NS", ""),
+    signal: smc.signal,
+    confidence: smc.confidence,
+    explanation: smc.explanation,
+    price: currentPrice,
+    type: type as StockDisplay["type"],
+    support: prevClose * 0.995,
+    resistance: prevClose * 1.01,
+    stoploss,
+    targets,
+    hitStatus:
+      currentPrice >= Math.max(...targets)
+        ? "TARGET ✅"
+        : currentPrice <= stoploss
+        ? "STOP ❌"
+        : "ACTIVE",
+  };
 
-          const stock: StockDisplay = {
-            symbol: symbol.replace(".NS", ""),
-            signal: smc.signal,
-            confidence: smc.confidence,
-            explanation: smc.explanation,
-            price: currentPrice,
-            type: type as StockDisplay["type"],
-            support: prevClose * 0.995,
-            resistance: prevClose * 1.01,
-            stoploss,
-            targets,
-            hitStatus:
-              currentPrice >= Math.max(...targets)
-                ? "TARGET ✅"
-                : currentPrice <= stoploss
-                ? "STOP ❌"
-                : "ACTIVE",
-          };
+  const prevHitTrade = savedTrades.find(
+    (t) =>
+      t.symbol.replace(".NS", "") === symbol.replace(".NS", "") &&
+      t.status === "target_hit"
+  );
+  if (prevHitTrade) stock.hitStatus = "TARGET ✅";
 
-          const prevHitTrade = savedTrades.find(
-            (t) =>
-              t.symbol.replace(".NS", "") === symbol.replace(".NS", "") &&
-              t.status === "target_hit"
-          );
-          if (prevHitTrade) stock.hitStatus = "TARGET ✅";
+  if (!bestSymbol || stock.confidence > bestSymbol.confidence) bestSymbol = stock;
 
-          if (!bestSymbol || stock.confidence > bestSymbol.confidence)
-            bestSymbol = stock;
+  await maybeNotifyAndSave(
+    stock.symbol,
+    provider,
+    { ...smc, stoploss, targets },
+    prevClose,
+    currentPrice
+  );
+} catch (err) {
+  console.warn("Error loading symbol:", symbol, err);
+}
 
-          await maybeNotifyAndSave(
-            stock.symbol,
-            provider,
-            { ...smc, stoploss, targets },
-            prevClose,
-            currentPrice
-          );
-        } catch (err) {
-          console.warn("Error loading symbol:", symbol, err);
-        }
+
       }
 
       if (bestSymbol) out.push(bestSymbol);

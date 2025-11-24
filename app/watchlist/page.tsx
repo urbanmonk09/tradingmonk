@@ -19,6 +19,16 @@ import {
   removeFromWatchlist,
 } from "@/firebase/firestoreWatchlist";
 
+interface LivePrice {
+  price: number;
+  previousClose: number;
+  lastUpdated: number;
+  prices?: number[];
+  highs?: number[];
+  lows?: number[];
+  volumes?: number[];
+}
+
 type SymbolType = "stock" | "index" | "crypto";
 
 const defaultSymbols: { symbol: string; type: SymbolType }[] = [
@@ -35,9 +45,7 @@ export default function Watchlist() {
   const { user } = useContext(AuthContext);
   const userEmail = (user as any)?.email ?? (user as any)?.emailAddress ?? "";
 
-  const [livePrices, setLivePrices] = useState<
-    Record<string, { price: number; previousClose: number; lastUpdated: number }>
-  >({});
+  const [livePrices, setLivePrices] = useState<Record<string, LivePrice>>({});
 
   const [savedTrades, setSavedTrades] = useState<any[]>([]);
   const [userWatchlist, setUserWatchlist] = useState<
@@ -205,66 +213,101 @@ export default function Watchlist() {
   });
 
   const combinedForRanking: StockDisplay[] = [
-    ...tradesWithPrices.map((t: any) => {
-      const stockInput = {
-        symbol: t.symbol,
-        current: t.price ?? t.entryPrice ?? 0,
-        previousClose: t.previousClose ?? t.entryPrice ?? 0,
-        prices: t.prices ?? [],
-        highs: t.highs ?? [],
-        lows: t.lows ?? [],
-        volumes: t.volumes ?? [],
-      };
+  // --- Trades that already have price history ---
+  ...tradesWithPrices.map((t: any) => {
+    const prevClose = t.previousClose ?? t.entryPrice ?? 0;
+    const currentPrice = t.price ?? t.entryPrice ?? prevClose;
 
-      const signalResult = generateSMCSignal(stockInput);
+    const stockInput = {
+      symbol: t.symbol,
+      current: currentPrice,
+      previousClose: prevClose,
+      prices: t.prices ?? [],
+      highs: t.highs ?? [],
+      lows: t.lows ?? [],
+      volumes: t.volumes ?? [],
+    };
 
-      return {
-        symbol: t.symbol,
-        signal: t.signal ?? "HOLD",
-        confidence: signalResult.confidence ?? 50,
-        explanation:
-          (t.explanation ?? "") +
-          (signalResult.explanation ? ` ${signalResult.explanation}` : ""),
-        price: t.price ?? t.entryPrice,
-        type: t.type ?? ("stock" as const),
-        support: t.support,
-        resistance: t.resistance,
-        stoploss: signalResult.stoploss ?? t.stoploss,
-        targets: signalResult.targets ?? t.targets,
-        hitStatus: t.hitStatus ?? signalResult.hitStatus,
-      };
-    }),
-    ...symbolsWithoutTrades.map((s) => {
-      const live = livePrices[s.symbol] ?? { price: 0, previousClose: 0 };
-      const prevClose = live.previousClose ?? live.price ?? 0;
+    const signalResult = generateSMCSignal(stockInput);
 
-      const stockInput = {
-        symbol: s.symbol,
-        current: live.price ?? prevClose,
-        previousClose: prevClose,
-        prices: [],
-        highs: [],
-        lows: [],
-        volumes: [],
-      };
+    // --- Fixed stoploss & targets ---
+    const stoploss = prevClose * 0.995; // -0.50%
+    const targets =
+      signalResult.signal === "BUY"
+        ? [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]
+        : signalResult.signal === "SELL"
+        ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 0.9868]
+        : [prevClose];
 
-      const signalResult = generateSMCSignal(stockInput);
+    return {
+      symbol: t.symbol,
+      signal: signalResult.signal ?? "HOLD",
+      confidence: signalResult.confidence ?? 50,
+      explanation:
+        (t.explanation ?? "") +
+        (signalResult.explanation ? ` ${signalResult.explanation}` : ""),
+      price: currentPrice,
+      type: t.type ?? ("stock" as const),
+      support: prevClose * 0.995,
+      resistance: prevClose * 1.01,
+      stoploss,
+      targets,
+      hitStatus:
+        currentPrice >= Math.max(...targets)
+          ? "TARGET ✅"
+          : currentPrice <= stoploss
+          ? "STOP ❌"
+          : "ACTIVE",
+    } as StockDisplay;
+  }),
 
-      return {
-        symbol: s.symbol,
-        signal: signalResult.signal ?? "HOLD",
-        confidence: signalResult.confidence ?? 50,
-        explanation: signalResult.explanation ?? "",
-        price: live.price ?? prevClose,
-        type: s.type ?? ("stock" as const),
-        support: prevClose * 0.995,
-        resistance: prevClose * 1.01,
-        stoploss: prevClose * 0.985,
-        targets: signalResult.targets ?? [prevClose],
-        hitStatus: signalResult.hitStatus ?? "ACTIVE",
-      } as StockDisplay;
-    }),
-  ];
+  // --- Symbols without prior trades ---
+  ...symbolsWithoutTrades.map((s) => {
+    const live = livePrices[s.symbol] ?? { price: 0, previousClose: 0 };
+    const prevClose = live.previousClose ?? live.price ?? 0;
+    const currentPrice = live.price ?? prevClose;
+
+    const stockInput = {
+      symbol: s.symbol,
+      current: currentPrice,
+      previousClose: prevClose,
+      prices: live.prices ?? [],
+      highs: live.highs ?? [],
+      lows: live.lows ?? [],
+      volumes: live.volumes ?? [],
+    };
+
+    const signalResult = generateSMCSignal(stockInput);
+
+    // --- Fixed stoploss & targets ---
+    const stoploss = prevClose * 0.995; // -0.50%
+    const targets =
+      signalResult.signal === "BUY"
+        ? [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]
+        : signalResult.signal === "SELL"
+        ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 0.9868]
+        : [prevClose];
+
+    return {
+      symbol: s.symbol,
+      signal: signalResult.signal ?? "HOLD",
+      confidence: signalResult.confidence ?? 50,
+      explanation: signalResult.explanation ?? "",
+      price: currentPrice,
+      type: s.type ?? ("stock" as const),
+      support: prevClose * 0.995,
+      resistance: prevClose * 1.01,
+      stoploss,
+      targets,
+      hitStatus:
+        currentPrice >= Math.max(...targets)
+          ? "TARGET ✅"
+          : currentPrice <= stoploss
+          ? "STOP ❌"
+          : "ACTIVE",
+    } as StockDisplay;
+  }),
+];
 
   const combinedSorted = [...combinedForRanking].sort(
     (a, b) => (b.confidence ?? 0) - (a.confidence ?? 0)
