@@ -4,16 +4,20 @@ import React, { useState } from "react";
 import Link from "next/link";
 import {
   createUserWithEmailAndPassword,
+  updateProfile,
   signInWithPopup,
 } from "firebase/auth";
 import {
   auth,
   googleProvider,
   facebookProvider,
-  appleProvider,
 } from "@/firebase/firebase";
+import { db } from "@/firebase/firebase";
+import { doc, setDoc } from "firebase/firestore";
 
 export default function SignupPage() {
+  const [name, setName] = useState("");
+  const [mobile, setMobile] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -23,7 +27,19 @@ export default function SignupPage() {
     setError("");
 
     try {
-      await createUserWithEmailAndPassword(auth, email, password);
+      const userCred = await createUserWithEmailAndPassword(auth, email, password);
+
+      // Save name into Firebase auth
+      await updateProfile(userCred.user, { displayName: name });
+
+      // Save extra fields in Firestore
+      await setDoc(doc(db, "users", userCred.user.uid), {
+        name,
+        mobile,
+        email,
+        createdAt: Date.now(),
+      });
+
       window.location.href = "/";
     } catch (err: any) {
       setError(err.message);
@@ -33,7 +49,20 @@ export default function SignupPage() {
   async function oauthSignup(provider: any) {
     setError("");
     try {
-      await signInWithPopup(auth, provider);
+      const result = await signInWithPopup(auth, provider);
+
+      // Store user OAuth record in Firestore
+      await setDoc(
+        doc(db, "users", result.user.uid),
+        {
+          name: result.user.displayName,
+          mobile: "",
+          email: result.user.email,
+          createdAt: Date.now(),
+        },
+        { merge: true }
+      );
+
       window.location.href = "/";
     } catch (err: any) {
       setError(err.message);
@@ -50,6 +79,20 @@ export default function SignupPage() {
         )}
 
         <form onSubmit={handleSignup} className="flex flex-col gap-4">
+          <input
+            className="p-3 rounded-lg bg-black/40 border border-white/20"
+            placeholder="Full Name"
+            type="text"
+            onChange={(e) => setName(e.target.value)}
+          />
+
+          <input
+            className="p-3 rounded-lg bg-black/40 border border-white/20"
+            placeholder="Mobile Number"
+            type="tel"
+            onChange={(e) => setMobile(e.target.value)}
+          />
+
           <input
             className="p-3 rounded-lg bg-black/40 border border-white/20"
             placeholder="Email"
@@ -86,13 +129,6 @@ export default function SignupPage() {
             className="w-full bg-blue-600 py-3 rounded-lg font-semibold"
           >
             Continue with Facebook
-          </button>
-
-          <button
-            onClick={() => oauthSignup(appleProvider)}
-            className="w-full bg-white/20 py-3 rounded-lg font-semibold"
-          >
-            Continue with Apple
           </button>
         </div>
 
