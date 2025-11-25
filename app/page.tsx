@@ -326,6 +326,7 @@ export default function Home() {
         >
           Pro Members Watchlist
         </button>
+        *Educational Research Work Only for Guidance
       </div>
 
       {/* Search */}
