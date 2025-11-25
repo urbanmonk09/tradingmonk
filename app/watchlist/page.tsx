@@ -31,6 +31,14 @@ interface LivePrice {
 
 type SymbolType = "stock" | "index" | "crypto";
 
+// ----------------------
+// New types for tabs / assets
+type TabType = "top" | "stock" | "crypto" | "index";
+type AssetType = "stock" | "crypto";
+// map UI tab -> actual asset type expected by logic (indexes behave like stocks)
+const mapTabToAsset = (tab: TabType): AssetType => (tab === "crypto" ? "crypto" : "stock");
+// ----------------------
+
 const defaultSymbols: { symbol: string; type: SymbolType }[] = [
   { symbol: "RELIANCE.NS", type: "stock" },
   { symbol: "^NSEI", type: "index" },
@@ -57,6 +65,28 @@ export default function Watchlist() {
     "all"
   );
   const [toast, setToast] = useState<{ msg: string; bg?: string } | null>(null);
+
+  // ------------------------------
+  // NEW ADD-ONS STATE (Tabs / Sorting / Pagination / Sticky)
+  // activeTab: top | stock | crypto | index
+  const [activeTab, setActiveTab] = useState<TabType>("top");
+
+  // sortBy: confidence | trend | volume
+  const [sortBy, setSortBy] = useState<"confidence" | "trend" | "volume">(
+    "confidence"
+  );
+
+  // pagination state per tab
+  const PAGE_SIZE = 9;
+  const [pageMap, setPageMap] = useState<Record<string, number>>({
+    top: 1,
+    stock: 1,
+    crypto: 1,
+    index: 1,
+  });
+
+  // whether to show sticky tabs — we'll use CSS "sticky"
+  const tabsRef = useRef<HTMLDivElement | null>(null);
 
   // ------------------------------
   const apiSymbol = (symbol: string) => {
@@ -147,192 +177,158 @@ export default function Watchlist() {
   );
 
   // ------------------------------
-  // Live price fetcher
-  useEffect(() => {
-    let isMounted = true;
-    const allSymbolsToFetch = uniqueSymbols.map((s) => s.symbol);
-
-    const fetchAllPrices = async () => {
-      const now = Date.now();
-      for (const sym of allSymbolsToFetch) {
-        const last = livePrices[sym]?.lastUpdated ?? 0;
-        if (now - last >= REFRESH_INTERVAL) {
-          try {
-            const provider = "yahoo";
-            const resp = await fetchStockData(apiSymbol(sym), provider as any);
-            if (!isMounted) return;
-            setLivePrices((prev) => ({
-              ...prev,
-              [sym]: {
-                price: resp.current ?? 0,
-                previousClose: resp.previousClose ?? resp.current ?? 0,
-                lastUpdated: now,
-              },
-            }));
-          } catch (err) {
-            console.warn("Failed to fetch price", sym, err);
-          }
-        }
-      }
-    };
-
-    fetchAllPrices();
-    const interval = setInterval(fetchAllPrices, 10000);
-    return () => {
-      isMounted = false;
-      clearInterval(interval);
-    };
-  }, [JSON.stringify(uniqueSymbols.map((s) => s.symbol)), livePrices]);
+  // NOTE: Live price fetcher removed by request.
+  // livePrices will remain an empty object unless populated elsewhere.
 
   // ------------------------------
-  // Trades with live prices
+  // Trades with live prices (adapted to not rely on livePrices fetcher)
   const tradesWithPrices = savedTrades.map((t: any) => {
-  const live = livePrices[t.symbol] ?? { price: 0, previousClose: 0 };
-  const prevClose = live.previousClose ?? t.entryPrice ?? 0;
-  const price = live.price ?? t.entryPrice ?? prevClose;
+    // prefer stored previousClose/entryPrice; livePrices may be empty now
+    const live = livePrices[t.symbol] ?? { price: 0, previousClose: 0 };
+    const prevClose = t.previousClose ?? t.entryPrice ?? live.previousClose ?? 0;
+    const price = t.entryPrice ?? live.price ?? prevClose;
 
-  const isShort = t.direction === "short";
+    const isShort = t.direction === "short";
 
-  // Short and long have opposite stop/target logic
-  const stoploss = isShort ? prevClose * 1.005 : prevClose * 0.995;
-  const targets = isShort
-    ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 0.9868] // SHORT TARGETS
-    : [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]; // LONG TARGETS
+    // Short and long have opposite stop/target logic
+    const stoploss = isShort ? prevClose * 1.005 : prevClose * 0.995;
+    const targets = isShort
+      ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 0.9868] // SHORT TARGETS
+      : [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]; // LONG TARGETS
 
-  const support = prevClose * 0.995;
-  const resistance = prevClose * 1.01;
+    const support = prevClose * 0.995;
+    const resistance = prevClose * 1.01;
 
-  let hitStatus: "ACTIVE" | "TARGET ✅" | "STOP ❌" = "ACTIVE";
+    let hitStatus: "ACTIVE" | "TARGET ✅" | "STOP ❌" = "ACTIVE";
 
-  if (!isShort) {
-    if (price >= Math.max(...targets)) hitStatus = "TARGET ✅";
-    else if (price <= stoploss) hitStatus = "STOP ❌";
-  } else {
-    if (price <= Math.min(...targets)) hitStatus = "TARGET ✅";
-    else if (price >= stoploss) hitStatus = "STOP ❌";
-  }
+    if (!isShort) {
+      if (price >= Math.max(...targets)) hitStatus = "TARGET ✅";
+      else if (price <= stoploss) hitStatus = "STOP ❌";
+    } else {
+      if (price <= Math.min(...targets)) hitStatus = "TARGET ✅";
+      else if (price >= stoploss) hitStatus = "STOP ❌";
+    }
 
-  return {
-    ...t,
-    price,
-    stoploss,
-    targets,
-    support,
-    resistance,
-    hitStatus,
-    // 🚨 this preserves short trades visually
-    signal: isShort ? "SELL" : "BUY",
-    type: t.type ?? "stock",
-  };
-});
-
+    return {
+      ...t,
+      price,
+      stoploss,
+      targets,
+      support,
+      resistance,
+      hitStatus,
+      // 🚨 this preserves short trades visually
+      signal: isShort ? "SELL" : "BUY",
+      type: t.type ?? "stock",
+    };
+  });
 
   const combinedForRanking: StockDisplay[] = [
-  // --- Trades that already have price history ---
-  ...tradesWithPrices.map((t: any) => {
-    const prevClose = t.previousClose ?? t.entryPrice ?? 0;
-    const currentPrice = t.price ?? t.entryPrice ?? prevClose;
+    // --- Trades that already have price history ---
+    ...tradesWithPrices.map((t: any) => {
+      const prevClose = t.previousClose ?? t.entryPrice ?? 0;
+      const currentPrice = t.price ?? t.entryPrice ?? prevClose;
 
-    const stockInput = {
-      symbol: t.symbol,
-      current: currentPrice,
-      previousClose: prevClose,
-      prices: t.prices ?? [],
-      highs: t.highs ?? [],
-      lows: t.lows ?? [],
-      volumes: t.volumes ?? [],
-    };
+      const stockInput = {
+        symbol: t.symbol,
+        current: currentPrice,
+        previousClose: prevClose,
+        prices: t.prices ?? [],
+        highs: t.highs ?? [],
+        lows: t.lows ?? [],
+        volumes: t.volumes ?? [],
+      };
 
-    const signalResult = generateSMCSignal(stockInput);
+      const signalResult = generateSMCSignal(stockInput);
 
-    // --- Fixed stoploss & targets ---
-    const stoploss = prevClose * 0.995; // -0.50%
-    const targets =
-      signalResult.signal === "BUY"
-        ? [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]
-        : signalResult.signal === "SELL"
-        ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 0.9868]
-        : [prevClose];
+      // --- Fixed stoploss & targets ---
+      const stoploss = prevClose * 0.995; // -0.50%
+      const targets =
+        signalResult.signal === "BUY"
+          ? [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]
+          : signalResult.signal === "SELL"
+          ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 1.0132 * 0.957] // fallback but shouldn't happen
+          : [prevClose];
 
-    return {
-      symbol: t.symbol,
-      signal: signalResult.signal ?? "HOLD",
-      confidence: signalResult.confidence ?? 50,
-      explanation:
-        (t.explanation ?? "") +
-        (signalResult.explanation ? ` ${signalResult.explanation}` : ""),
-      price: currentPrice,
-      type: t.type ?? ("stock" as const),
-      support: prevClose * 0.995,
-      resistance: prevClose * 1.01,
-      stoploss,
-      targets,
-      hitStatus:
-        currentPrice >= Math.max(...targets)
-          ? "TARGET ✅"
-          : currentPrice <= stoploss
-          ? "STOP ❌"
-          : "ACTIVE",
-    } as StockDisplay;
-  }),
+      return {
+        symbol: t.symbol,
+        signal: signalResult.signal ?? "HOLD",
+        confidence: signalResult.confidence ?? 50,
+        explanation:
+          (t.explanation ?? "") +
+          (signalResult.explanation ? ` ${signalResult.explanation}` : ""),
+        price: currentPrice,
+        type: t.type ?? ("stock" as const),
+        support: prevClose * 0.995,
+        resistance: prevClose * 1.01,
+        stoploss,
+        targets,
+        hitStatus:
+          currentPrice >= Math.max(...targets)
+            ? "TARGET ✅"
+            : currentPrice <= stoploss
+            ? "STOP ❌"
+            : "ACTIVE",
+      } as StockDisplay;
+    }),
 
-  // --- Symbols without prior trades ---
-  ...symbolsWithoutTrades.map((s) => {
-    const live = livePrices[s.symbol] ?? { price: 0, previousClose: 0 };
-    const prevClose = live.previousClose ?? live.price ?? 0;
-    const currentPrice = live.price ?? prevClose;
+    // --- Symbols without prior trades ---
+    ...symbolsWithoutTrades.map((s) => {
+      // Without live price fetches we fallback to zeros for price info
+      const prevClose = 0;
+      const currentPrice = 0;
 
-    const stockInput = {
-      symbol: s.symbol,
-      current: currentPrice,
-      previousClose: prevClose,
-      prices: live.prices ?? [],
-      highs: live.highs ?? [],
-      lows: live.lows ?? [],
-      volumes: live.volumes ?? [],
-    };
+      const stockInput = {
+        symbol: s.symbol,
+        current: currentPrice,
+        previousClose: prevClose,
+        prices: [],
+        highs: [],
+        lows: [],
+        volumes: [],
+      };
 
-    const signalResult = generateSMCSignal(stockInput);
+      const signalResult = generateSMCSignal(stockInput);
 
-    // --- Fixed stoploss & targets ---
-    const stoploss = prevClose * 0.995; // -0.50%
-    const targets =
-      signalResult.signal === "BUY"
-        ? [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]
-        : signalResult.signal === "SELL"
-        ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 0.9868]
-        : [prevClose];
+      // --- Fixed stoploss & targets ---
+      const stoploss = prevClose * 0.995; // -0.50% => will be 0 if prevClose is 0
+      const targets =
+        signalResult.signal === "BUY"
+          ? [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]
+          : signalResult.signal === "SELL"
+          ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 0.9868]
+          : [prevClose];
 
-    return {
-      symbol: s.symbol,
-      signal: signalResult.signal ?? "HOLD",
-      confidence: signalResult.confidence ?? 50,
-      explanation: signalResult.explanation ?? "",
-      price: currentPrice,
-      type: s.type ?? ("stock" as const),
-      support: prevClose * 0.995,
-      resistance: prevClose * 1.01,
-      stoploss,
-      targets,
-      hitStatus:
-        currentPrice >= Math.max(...targets)
-          ? "TARGET ✅"
-          : currentPrice <= stoploss
-          ? "STOP ❌"
-          : "ACTIVE",
-    } as StockDisplay;
-  }),
-];
+      return {
+        symbol: s.symbol,
+        signal: signalResult.signal ?? "HOLD",
+        confidence: signalResult.confidence ?? 50,
+        explanation: signalResult.explanation ?? "",
+        price: currentPrice,
+        type: s.type ?? ("stock" as const),
+        support: prevClose * 0.995,
+        resistance: prevClose * 1.01,
+        stoploss,
+        targets,
+        hitStatus:
+          currentPrice >= Math.max(...targets)
+            ? "TARGET ✅"
+            : currentPrice <= stoploss
+            ? "STOP ❌"
+            : "ACTIVE",
+      } as StockDisplay;
+    }),
+  ];
 
   const combinedSorted = [...combinedForRanking].sort(
     (a, b) => (b.confidence ?? 0) - (a.confidence ?? 0)
   );
 
-  const topFive = combinedSorted.slice(0, 5);
-  const screenerList = combinedSorted.slice(5);
+  // keep a single top list for UI tabs and for existing Top 5
+  const tabTopTrades = combinedSorted.slice(0, 5);
 
   // ------------------------------
-  // Remaining Trades split
+  // Remaining Trades split (keep existing behavior)
   const sortedTrades = [...tradesWithPrices].sort(
     (a: any, b: any) => (b.confidence ?? 0) - (a.confidence ?? 0)
   );
@@ -349,6 +345,107 @@ export default function Watchlist() {
       remainingTrades.push(t);
     }
   }
+
+  // ------------------------------
+  const tabStocks = combinedSorted.filter((x) => x.type === "stock");
+  const tabCrypto = combinedSorted.filter((x) => x.type === "crypto");
+  const tabIndex = combinedSorted.filter((x) => x.type === "index");
+
+  // Helper: compute trend and volume score (best-effort; data may be missing)
+  const computeTrendScore = (s: StockDisplay) => {
+    // prefer using previousClose if available via support/resistance heuristics,
+    // else fallback to 0
+    const price = s.price ?? 0;
+    const prevClose = s.support ? s.support / 0.995 : 0; // reverse-engineer if support exists
+    if (prevClose && prevClose > 0) {
+      return (price - prevClose) / prevClose;
+    }
+    // fallback: use difference between price and resistance as a weak proxy
+    const resistance = s.resistance ?? price;
+    return (price - resistance) / (resistance || 1);
+  };
+
+  const computeVolumeScore = (s: StockDisplay) => {
+    // If livePrices has volumes for symbol, use that; otherwise 0
+    const vol = livePrices[s.symbol]?.volumes;
+    if (Array.isArray(vol) && vol.length > 0) {
+      // use latest volume
+      return vol[vol.length - 1] ?? 0;
+    }
+    // not available -> 0
+    return 0;
+  };
+
+  const sortList = (list: StockDisplay[], by: typeof sortBy) => {
+    const copy = [...list];
+    if (by === "confidence") {
+      return copy.sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+    }
+    if (by === "trend") {
+      return copy.sort((a, b) => computeTrendScore(b) - computeTrendScore(a));
+    }
+    // volume
+    return copy.sort((a, b) => computeVolumeScore(b) - computeVolumeScore(a));
+  };
+
+  // Pagination helper: returns items for a tab and total pages
+  const paginate = (list: StockDisplay[], page: number) => {
+    const total = list.length;
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const safePage = Math.min(Math.max(1, page), totalPages);
+    const start = (safePage - 1) * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    const items = list.slice(start, end);
+    return { items, totalPages, page: safePage };
+  };
+
+  // Update page for a given tab
+  const setPageForTab = (tab: TabType, page: number) => {
+    setPageMap((prev) => ({ ...prev, [tab]: page }));
+    // scroll to tabs area for better UX
+    if (tabsRef.current) {
+      tabsRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  };
+
+  // Pro-only enforcement: require user to be pro for certain tabs
+  const isPro = !!(user as any)?.isPro;
+  // Let's make Stocks and Crypto pro-only as an example (you can change which tabs are pro)
+  const PRO_ONLY_TABS: TabType[] = ["stock", "crypto"];
+
+  const tryActivateTab = (tab: TabType) => {
+    if (PRO_ONLY_TABS.includes(tab) && !isPro) {
+      setToast({
+        msg: `${tab.charAt(0).toUpperCase() + tab.slice(1)} tab is for Pro members only. Upgrade to access.`,
+        bg: "bg-yellow-600",
+      });
+      return;
+    }
+    setActiveTab(tab);
+    // reset page to 1 when switching
+    setPageMap((p) => ({ ...p, [tab]: 1 }));
+  };
+
+  // get list for active tab, sorted & paginated
+  const { currentItems, totalPagesForActive } = useMemo(() => {
+    let list: StockDisplay[] = [];
+    if (activeTab === "top") list = tabTopTrades;
+    else if (activeTab === "stock") list = tabStocks;
+    else if (activeTab === "crypto") list = tabCrypto;
+    else if (activeTab === "index") list = tabIndex;
+
+    const sorted = sortList(list, sortBy);
+    const page = pageMap[activeTab] ?? 1;
+    const { items, totalPages, page: safePage } = paginate(sorted, page);
+
+    // ensure pageMap sync if out of bounds
+    if (page !== safePage) {
+      setPageMap((p) => ({ ...p, [activeTab]: safePage }));
+    }
+
+    return { currentItems: items, totalPagesForActive: Math.max(1, totalPages) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, sortBy, combinedSorted, JSON.stringify(livePrices), pageMap.top, pageMap.stock, pageMap.crypto, pageMap.index]);
 
   // ------------------------------
   // Render
@@ -381,25 +478,131 @@ export default function Watchlist() {
             </div>
           </div>
 
+          {/* TABS (sticky) */}
+          <div ref={tabsRef} className="sticky top-16 z-20 bg-gray-100 py-3">
+            <div className="container mx-auto px-0">
+              <div className="flex items-center gap-3 mb-3">
+                <button
+                  onClick={() => tryActivateTab("top")}
+                  className={`px-4 py-2 rounded-lg ${
+                    activeTab === "top" ? "bg-blue-600 text-white" : "bg-white border"
+                  }`}
+                >
+                  Top Trades
+                </button>
+
+                <button
+                  onClick={() => tryActivateTab("stock")}
+                  className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
+                    activeTab === "stock" ? "bg-blue-600 text-white" : "bg-white border"
+                  }`}
+                >
+                  Stocks {PRO_ONLY_TABS.includes("stock") && !isPro ? "🔒" : ""}
+                </button>
+
+                <button
+                  onClick={() => tryActivateTab("crypto")}
+                  className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
+                    activeTab === "crypto" ? "bg-blue-600 text-white" : "bg-white border"
+                  }`}
+                >
+                  Crypto {PRO_ONLY_TABS.includes("crypto") && !isPro ? "🔒" : ""}
+                </button>
+
+                <button
+                  onClick={() => tryActivateTab("index")}
+                  className={`px-4 py-2 rounded-lg ${
+                    activeTab === "index" ? "bg-blue-600 text-white" : "bg-white border"
+                  }`}
+                >
+                  Index
+                </button>
+
+                {/* Sorting dropdown */}
+                <div className="ml-auto flex items-center gap-2">
+                  <label className="text-sm mr-2">Sort by:</label>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as any)}
+                    className="px-2 py-1 rounded border"
+                  >
+                    <option value="confidence">Confidence</option>
+                    <option value="trend">Trend</option>
+                    <option value="volume">Volume</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* TAB CONTENT (shows filtered/sorted/paginated items) */}
+          <div className="mb-6">
+            <h3 className="text-lg font-semibold mb-2">
+              {activeTab === "top" && "🔥 Top Trades"}
+              {activeTab === "stock" && "📈 Stocks"}
+              {activeTab === "crypto" && "🪙 Crypto"}
+              {activeTab === "index" && "📊 Indices"}
+              {PRO_ONLY_TABS.includes(activeTab as any) && !isPro ? " (Pro only)" : ""}
+            </h3>
+
+            {/* If tab is pro-only and user isn't pro, show gated overlay */}
+            {PRO_ONLY_TABS.includes(activeTab as any) && !isPro ? (
+              <div className="p-6 bg-white rounded shadow text-center">
+                <p className="mb-3">This tab is available for Pro members only.</p>
+                <button
+                  onClick={() => setToast({ msg: "Redirect to upgrade flow (implement in app)", bg: "bg-blue-600" })}
+                  className="px-4 py-2 bg-yellow-500 rounded text-white"
+                >
+                  Upgrade to Pro
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {currentItems.length === 0 ? (
+                    <div className="p-4 bg-white rounded shadow col-span-full text-center">
+                      No items to show in this tab.
+                    </div>
+                  ) : (
+                    currentItems.map((item) => <StockCard key={item.symbol} {...item} />)
+                  )}
+                </div>
+
+                {/* Pagination controls */}
+                <div className="flex items-center justify-center gap-3 mt-6">
+                  <button
+                    onClick={() => setPageForTab(activeTab, (pageMap[activeTab] ?? 1) - 1)}
+                    disabled={(pageMap[activeTab] ?? 1) <= 1}
+                    className="px-3 py-1 rounded border disabled:opacity-50"
+                  >
+                    Prev
+                  </button>
+
+                  <span>
+                    Page {pageMap[activeTab] ?? 1} of {totalPagesForActive}
+                  </span>
+
+                  <button
+                    onClick={() => setPageForTab(activeTab, (pageMap[activeTab] ?? 1) + 1)}
+                    disabled={(pageMap[activeTab] ?? 1) >= totalPagesForActive}
+                    className="px-3 py-1 rounded border disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* --- EXISTING PAGE SECTIONS (kept exactly as before, with screener removed) --- */}
+
           {/* TOP 5 */}
-          {topFive.length > 0 && (
+          {tabTopTrades.length > 0 && (
             <div className="mb-6">
               <h3 className="text-lg font-semibold mb-2">🔥 Top Trades</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {topFive.map((t) => (
+                {tabTopTrades.map((t) => (
                   <StockCard key={t.symbol} {...t} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* SCREENER */}
-          {screenerList.length > 0 && (
-            <div className="mb-6">
-              <h3 className="text-lg font-semibold mb-2">Screener</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {screenerList.map((s) => (
-                  <StockCard key={s.symbol} {...s} />
                 ))}
               </div>
             </div>
@@ -417,43 +620,7 @@ export default function Watchlist() {
             </div>
           )}
 
-          {/* Live Prices for symbols without trades */}
-          {symbolsWithoutTrades.length > 0 && (
-            <div className="mt-6">
-              <h3 className="text-lg font-semibold mb-2">Live Prices</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {symbolsWithoutTrades.map((s) => {
-                  const live = livePrices[s.symbol] ?? { price: 0, previousClose: 0 };
-                  const prevClose = live.previousClose ?? live.price ?? 0;
-
-                  const stoploss = prevClose * 0.985;
-                  const targets = [prevClose * 1.01, prevClose * 1.02, prevClose * 1.03];
-                  const support = prevClose * 0.995;
-                  const resistance = prevClose * 1.01;
-
-                  let hitStatus: "ACTIVE" | "TARGET ✅" | "STOP ❌" = "ACTIVE";
-                  if (live.price <= stoploss) hitStatus = "STOP ❌";
-                  else if (live.price >= Math.max(...targets)) hitStatus = "TARGET ✅";
-
-                  return (
-                    <StockCard
-                      key={s.symbol}
-                      symbol={s.symbol}
-                      type={s.type}
-                      signal="HOLD"
-                      confidence={0}
-                      price={live.price ?? prevClose}
-                      stoploss={stoploss}
-                      targets={targets}
-                      support={support}
-                      resistance={resistance}
-                      hitStatus={hitStatus}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          {/* Note: Live Prices section removed as requested */}
         </>
       )}
     </div>

@@ -351,6 +351,22 @@ export default function Home() {
       ) : (searchResults.length ? searchResults : stockData).map((s) => (
           <StockCard key={s.symbol} {...s} />
         ))}
+
+        {/* Footer */}
+<footer className="mt-10 p-6 bg-white rounded shadow text-center text-sm text-gray-600">
+  <div className="flex flex-col gap-3">
+    <a href="/contact" className="text-blue-600 hover:underline">Contact Us</a>
+    <a href="/terms" className="text-blue-600 hover:underline">Terms & Conditions</a>
+    <a href="/privacy" className="text-blue-600 hover:underline">Privacy Policy</a>
+    <a href="/refund" className="text-blue-600 hover:underline">Refund Policy</a>
+    <a href="/shipping" className="text-blue-600 hover:underline">Shipping Policy</a>
+  </div>
+
+  <p className="mt-4 text-gray-500 text-xs">
+    © {new Date().getFullYear()} AI Signal Generator — Educational Research Tool Only
+  </p>
+</footer>
+
     </div>
   );
 }
