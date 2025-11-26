@@ -49,6 +49,27 @@ const defaultSymbols: { symbol: string; type: SymbolType }[] = [
 
 const REFRESH_INTERVAL = 180000;
 
+// ----------------------
+// Helper utilities for dedupe & keys
+const normalizeType = (t?: string) => (t ? t : "unknown");
+const symbolTypeKey = (symbol: string, type?: string) => `${symbol}-${normalizeType(type)}`;
+
+const dedupeBySymbolType = <T extends { symbol: string; type?: string }>(arr: T[]) => {
+  const map = new Map<string, T>();
+  for (const item of arr) {
+    const key = symbolTypeKey(item.symbol, item.type);
+    if (!map.has(key)) {
+      map.set(key, item);
+    }
+  }
+  return Array.from(map.values());
+};
+
+// Creates a stable unique key for React elements. We still include index to fully guarantee uniqueness
+const makeUniqueKey = (item: { symbol: string; type?: string }, index: number) =>
+  `${symbolTypeKey(item.symbol, item.type)}-${index}`;
+// ----------------------
+
 export default function Watchlist() {
   const { user } = useContext(AuthContext);
   const userEmail = (user as any)?.email ?? (user as any)?.emailAddress ?? "";
@@ -168,12 +189,13 @@ export default function Watchlist() {
     ...userWatchlistSymbols,
   ];
 
+  // ensure uniqueSymbols dedupes by symbol+type (avoid duplicates from mappedExtraSymbols + userWatchlist)
   const uniqueSymbols = combinedSymbols.filter(
-    (v, i, a) => a.findIndex((x) => x.symbol === v.symbol) === i
+    (v, i, a) => a.findIndex((x) => symbolTypeKey(x.symbol, x.type) === symbolTypeKey(v.symbol, v.type)) === i
   );
 
   const symbolsWithoutTrades = uniqueSymbols.filter(
-    (s) => !savedTrades.some((t: any) => t.symbol === s.symbol)
+    (s) => !savedTrades.some((t: any) => t.symbol === s.symbol && normalizeType(t.type) === normalizeType(s.type))
   );
 
   // ------------------------------
@@ -325,7 +347,8 @@ export default function Watchlist() {
   );
 
   // keep a single top list for UI tabs and for existing Top 5
-  const tabTopTrades = combinedSorted.slice(0, 5);
+  // Deduplicate by symbol+type to ensure no duplicates in the top display
+  const tabTopTrades = dedupeBySymbolType(combinedSorted).slice(0, 5);
 
   // ------------------------------
   // Remaining Trades split (keep existing behavior)
@@ -564,7 +587,12 @@ export default function Watchlist() {
                       No items to show in this tab.
                     </div>
                   ) : (
-                    currentItems.map((item) => <StockCard key={item.symbol} {...item} />)
+                    // Deduplicate currentItems by symbol+type and produce stable unique keys
+                    dedupeBySymbolType(currentItems).map((item, idx) => (
+                      <div key={makeUniqueKey(item, idx)}>
+                        <StockCard {...item} />
+                      </div>
+                    ))
                   )}
                 </div>
 
@@ -601,8 +629,10 @@ export default function Watchlist() {
             <div className="mb-6">
               <h3 className="text-lg font-semibold mb-2">🔥 Top Trades</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {tabTopTrades.map((t) => (
-                  <StockCard key={t.symbol} {...t} />
+                {dedupeBySymbolType(tabTopTrades).map((t, idx) => (
+                  <div key={makeUniqueKey(t, idx)}>
+                    <StockCard {...t} />
+                  </div>
                 ))}
               </div>
             </div>
@@ -613,8 +643,10 @@ export default function Watchlist() {
             <div className="mb-6">
               <h3 className="text-lg font-semibold mb-2">All Other Trades</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {remainingTrades.map((t) => (
-                  <StockCard key={(t as any)._id ?? t.symbol} {...t} />
+                {dedupeBySymbolType(remainingTrades).map((t, idx) => (
+                  <div key={makeUniqueKey(t as any, idx)}>
+                    <StockCard {...(t as any)} />
+                  </div>
                 ))}
               </div>
             </div>
