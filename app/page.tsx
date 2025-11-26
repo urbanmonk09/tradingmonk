@@ -2,18 +2,16 @@
 
 import React, { useEffect, useState, useRef } from "react";
 import StockCard from "../src/components/StockCard";
-import { fetchStockData } from "../src/api/fetchStockData";
-import { generateSMCSignal, StockDisplay } from "../src/utils/xaiLogic";
 import NotificationToast from "../src/components/NotificationToast";
 import { useRouter } from "next/navigation";
 
-// 🔥 Firebase
 import { auth } from "../firebase/firebase";
 import { onAuthStateChanged } from "firebase/auth";
-import {
-  saveTradeToFirestore,
-  getUserTrades,
-} from "../firebase/firestoreActions";
+import { saveTradeToFirestore, getUserTrades } from "../firebase/firestoreActions";
+
+import { computeOptimizedSMC } from "@/src/utils/smcEngineOptimized";
+import { StockDisplay } from "@/src/utils/xaiLogic";
+import { fetchStockData } from "../src/api/fetchStockData";
 
 const homeSymbols = {
   stock: ["RELIANCE.NS", "TCS.NS", "INFY.NS"],
@@ -24,31 +22,18 @@ const homeSymbols = {
 
 const REFRESH_INTERVAL = 180000;
 
-// 🔥 FIX → Normalize signals so SELL works everywhere
+// Normalize signals
 const normalizeSignal = (s: string): "BUY" | "SELL" | "HOLD" => {
   if (!s) return "HOLD";
   const x = s.toUpperCase();
-
   if (x.includes("SELL") || x.includes("SHORT")) return "SELL";
   if (x.includes("BUY") || x.includes("LONG")) return "BUY";
-
   return "HOLD";
 };
 
 export default function Home() {
   const [stockData, setStockData] = useState<StockDisplay[]>([]);
-  const [livePrices, setLivePrices] = useState<Record<
-    string,
-    {
-      price: number;
-      previousClose: number;
-      lastUpdated: number;
-      prices?: number[];
-      highs?: number[];
-      lows?: number[];
-      volumes?: number[];
-    }
-  >>({});
+  const [livePrices, setLivePrices] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<StockDisplay[]>([]);
@@ -59,6 +44,7 @@ export default function Home() {
   const lastSignalsRef = useRef<Record<string, string>>({});
   const router = useRouter();
 
+  // Firebase auth
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
@@ -67,7 +53,6 @@ export default function Home() {
         setSavedTrades(trades);
       }
     });
-
     return () => unsub();
   }, []);
 
@@ -89,6 +74,7 @@ export default function Home() {
     return symbol;
   };
 
+  // Fetch live prices using fetchStockData
   useEffect(() => {
     let isMounted = true;
 
@@ -103,11 +89,9 @@ export default function Home() {
       const now = Date.now();
       for (const symbol of allSymbols) {
         const last = livePrices[symbol]?.lastUpdated ?? 0;
-
         if (now - last >= REFRESH_INTERVAL) {
           try {
-            const provider = "yahoo";
-            const data = await fetchStockData(apiSymbol(symbol), provider as any);
+            const data = await fetchStockData(apiSymbol(symbol), "yahoo");
             if (!isMounted) return;
 
             setLivePrices((prev) => ({
@@ -132,27 +116,23 @@ export default function Home() {
 
     fetchAllPrices();
     const interval = setInterval(fetchAllPrices, 10000);
-
     return () => {
       isMounted = false;
       clearInterval(interval);
     };
   }, [livePrices]);
 
-  // FIX: Preserve SELL signals in notifications & Firestore
+  // Notify & save trades
   const maybeNotifyAndSave = async (
     symbol: string,
-    provider: string,
     trade: any,
     prevClose: number,
     currentPrice?: number
   ) => {
     const normalizedSignal = normalizeSignal(trade.signal);
-
     if (lastSignalsRef.current[symbol] === normalizedSignal) return;
 
     lastSignalsRef.current[symbol] = normalizedSignal;
-
     if (typeof window !== "undefined")
       localStorage.setItem("lastSignals", JSON.stringify(lastSignalsRef.current));
 
@@ -180,19 +160,20 @@ export default function Home() {
           : symbol.includes("/USD") || symbol === "XAU/USD"
           ? "crypto"
           : "stock",
-        direction: normalizedSignal === "BUY" ? "long" : "short", // FIX
+        direction: normalizedSignal === "BUY" ? "long" : "short",
         entryPrice: prevClose,
         stopLoss: trade.stoploss ?? undefined,
         targets: trade.targets ?? undefined,
-        confidence: trade.confidence ?? 0,
+        confidence: trade.optimizedConfidence ?? 0,
         status: "active",
-        provider,
-        note: trade.explanation ?? "",
+        provider: "yahoo",
+        note: trade.reasons.join("\n"),
         timestamp: Date.now(),
       });
     }
   };
 
+  // Load & compute optimized SMC signals
   const loadData = async () => {
     setLoading(true);
     const out: StockDisplay[] = [];
@@ -205,12 +186,12 @@ export default function Home() {
 
       for (const symbol of symbols) {
         try {
-          const provider = "yahoo";
           const live = livePrices[symbol] ?? {};
           const prevClose = live.previousClose ?? 0;
           const currentPrice = live.price ?? prevClose;
 
-          const smc = generateSMCSignal({
+          const smc = computeOptimizedSMC({
+            symbol,
             current: currentPrice,
             previousClose: prevClose,
             prices: live.prices ?? [],
@@ -219,59 +200,37 @@ export default function Home() {
             volumes: live.volumes ?? [],
           });
 
-          // 🔥 FIX: APPLY SELL LOGIC
           const finalSignal = normalizeSignal(smc.signal);
-
-          const stoploss =
-            finalSignal === "SELL" ? prevClose * 1.005 : prevClose * 0.995;
-
-          const targets =
-            finalSignal === "SELL"
-              ? [prevClose * 0.9922, prevClose * 0.99, prevClose * 0.9868]
-              : finalSignal === "BUY"
-              ? [prevClose * 1.0078, prevClose * 1.01, prevClose * 1.0132]
-              : [prevClose];
 
           const stock: StockDisplay = {
             symbol: symbol.replace(".NS", ""),
             signal: finalSignal,
-            confidence: smc.confidence,
-            explanation: smc.explanation,
+            confidence: smc.optimizedConfidence,
+            explanation: smc.reasons.join("; "),
             price: currentPrice,
             type: type as StockDisplay["type"],
+            stoploss: smc.stoploss,
+            targets: smc.targets,
             support: prevClose * 0.995,
             resistance: prevClose * 1.01,
-            stoploss,
-            targets,
             hitStatus:
-  (finalSignal === "BUY" && currentPrice >= Math.max(...targets)) ||
-  (finalSignal === "SELL" && currentPrice <= Math.min(...targets))
-    ? "TARGET ✅"
-    : (finalSignal === "BUY" && currentPrice <= stoploss) ||
-      (finalSignal === "SELL" && currentPrice >= stoploss)
-    ? "STOP ❌"
-    : "ACTIVE",
-
+              (finalSignal === "BUY" && currentPrice >= Math.max(...smc.targets)) ||
+              (finalSignal === "SELL" && currentPrice <= Math.min(...smc.targets))
+                ? "TARGET ✅"
+                : (finalSignal === "BUY" && currentPrice <= smc.stoploss) ||
+                  (finalSignal === "SELL" && currentPrice >= smc.stoploss)
+                ? "STOP ❌"
+                : "ACTIVE",
           };
 
           const prevHitTrade = savedTrades.find(
-            (t) =>
-              t.symbol.replace(".NS", "") === symbol.replace(".NS", "") &&
-              t.status === "target_hit"
+            (t) => t.symbol.replace(".NS", "") === symbol.replace(".NS", "") && t.status === "target_hit"
           );
           if (prevHitTrade) stock.hitStatus = "TARGET ✅";
 
+          if (!bestSymbol || stock.confidence > bestSymbol.confidence) bestSymbol = stock;
 
-          if (!bestSymbol || stock.confidence > bestSymbol.confidence)
-            bestSymbol = stock;
-
-          await maybeNotifyAndSave(
-            stock.symbol,
-            provider,
-            { ...smc, signal: finalSignal, stoploss, targets },
-            prevClose,
-            currentPrice
-          );
+          await maybeNotifyAndSave(stock.symbol, smc, prevClose, currentPrice);
         } catch (err) {
           console.warn("Error loading symbol:", symbol, err);
         }
@@ -290,15 +249,14 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [livePrices]);
 
+  // Search
   const handleSearch = () => {
     const term = search.trim().toLowerCase();
     if (!term) {
       setSearchResults(stockData);
       return;
     }
-    const filtered = stockData.filter((s) =>
-      s.symbol.toLowerCase().includes(term)
-    );
+    const filtered = stockData.filter((s) => s.symbol.toLowerCase().includes(term));
     setSearchResults(filtered);
   };
 
@@ -352,21 +310,19 @@ export default function Home() {
           <StockCard key={s.symbol} {...s} />
         ))}
 
-        {/* Footer */}
-<footer className="mt-10 p-6 bg-white rounded shadow text-center text-sm text-gray-600">
-  <div className="flex flex-col gap-3">
-    <a href="/contact" className="text-blue-600 hover:underline">Contact Us</a>
-    <a href="/terms" className="text-blue-600 hover:underline">Terms & Conditions</a>
-    <a href="/privacy" className="text-blue-600 hover:underline">Privacy Policy</a>
-    <a href="/refund" className="text-blue-600 hover:underline">Refund Policy</a>
-    <a href="/shipping" className="text-blue-600 hover:underline">Shipping Policy</a>
-  </div>
-
-  <p className="mt-4 text-gray-500 text-xs">
-    © {new Date().getFullYear()} AI Signal Generator — Educational Research Tool Only
-  </p>
-</footer>
-
+      {/* Footer */}
+      <footer className="mt-10 p-6 bg-white rounded shadow text-center text-sm text-gray-600">
+        <div className="flex flex-col gap-3">
+          <a href="/contact" className="text-blue-600 hover:underline">Contact Us</a>
+          <a href="/terms" className="text-blue-600 hover:underline">Terms & Conditions</a>
+          <a href="/privacy" className="text-blue-600 hover:underline">Privacy Policy</a>
+          <a href="/refund" className="text-blue-600 hover:underline">Refund Policy</a>
+          <a href="/shipping" className="text-blue-600 hover:underline">Shipping Policy</a>
+        </div>
+        <p className="mt-4 text-gray-500 text-xs">
+          © {new Date().getFullYear()} AI Signal Generator — Educational Research Tool Only
+        </p>
+      </footer>
     </div>
   );
 }
